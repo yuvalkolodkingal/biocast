@@ -1,0 +1,18 @@
+cff-version: 1.2.0
+title: "biocast: parametric shape generation and success estimation for bio-cemented construction waste"
+message: "If you use this tool, please cite the Still Life project it was built for."
+type: software
+abstract: >-
+  Generates cast geometries for Bacillus subtilis MICP on ground construction
+  waste, checks them against a machine-readable rule set derived from project
+  casting notes and retrieved literature, and estimates the probability of
+  complete solidification with propagated uncertainty and an attributed
+  failure mode.
+keywords:
+  - MICP
+  - biocementation
+  - Bacillus subtilis
+  - construction waste
+  - parametric design
+  - reaction-diffusion
+license: CC-BY-4.0

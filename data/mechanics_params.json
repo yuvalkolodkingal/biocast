@@ -1,0 +1,873 @@
+{
+  "meta": {
+    "track": "strength, failure mechanics, and masonry/tile standards",
+    "purpose": "numeric inputs for a parametric geometry generator + Monte Carlo success estimator for architectural objects cast from construction-waste aggregate bio-cemented by Bacillus subtilis MICP",
+    "evidence_classes": {
+      "MEASURED": "value reported in a retrieved paper or standard; the quoted wording or table location is given in notes",
+      "DERIVED": "computed by us from reported values; the arithmetic is shown in notes",
+      "ASSUMED": "engineering default with no source; the basis is stated in notes"
+    },
+    "organism_warning": "Nearly all MICP strength data is for Sporosarcina pasteurii (ureolytic, fast). This project uses Bacillus subtilis (non-ureolytic/oxidative, slower, strictly aerobic). No UCS-vs-CaCO3 dataset for B. subtilis-cemented granular material was found. Every UCS row is flagged with its organism; do not transfer values silently.",
+    "two_most_load_bearing_numbers": [
+      "granular bridging: aperture >= 6*d_max (accept) to 8*d_max (safe); certain jam below 3*d_max - see 'Granular bridging / jamming criterion' and 'Bridging criterion for particles suspended in a liquid'",
+      "stress concentration: Kt = 1 + 2*sqrt(h/r) (Inglis), tabulated in kt_vs_r_over_t"
+    ],
+    "headline_disagreement_with_team_notes": "The team's minimum groove width (2-3 x d_max) is 2-3x below the sourced granular bridging threshold (6-8 x d_max). Their 2*d_max sits at the always-clogs boundary reported for suspensions (W/d < 3)."
+  },
+  "parameters": [
+    {
+      "name": "UCS of MICP-treated granular material, pooled literature envelope",
+      "symbol": "q_u",
+      "value": null,
+      "low": 0.05,
+      "high": 18.0,
+      "units": "MPa",
+      "evidence_class": "MEASURED",
+      "organism": "mostly Sporosarcina pasteurii (ureolytic); pooled across studies",
+      "substrate": "mostly clean uniform silica sands",
+      "source_doi": "10.1016/j.bgtech.2023.100002",
+      "source_title": "Microbially induced carbonate precipitation (MICP) for soil strengthening: A comprehensive review",
+      "notes": "Fu, Saracho & Haigh 2023 Fig 2a: with CaCO3 content (Ccc) from below 1% to over 35%, UCS varies from below 50 kPa to over 18 MPa. The review states explicitly that the correlations reported in different works are diverse (linear, polynomial, exponential) and that 'the massive data discrepancy in Fig. 2a shows how difficult and unreliable it is to describe the relation with a single trendline'. USE THIS AS THE MONTE CARLO PRIOR, NOT A FITTED CURVE."
+    },
+    {
+      "name": "Minimum CaCO3 content for a self-supporting (unconfined-testable) specimen",
+      "symbol": "Ccc_min",
+      "value": 3.0,
+      "low": 2.0,
+      "high": 3.0,
+      "units": "% by mass",
+      "evidence_class": "MEASURED",
+      "organism": "Sporosarcina pasteurii",
+      "substrate": "sand",
+      "source_doi": "10.1016/j.bgtech.2023.100002",
+      "source_title": "Microbially induced carbonate precipitation (MICP) for soil strengthening: A comprehensive review",
+      "notes": "Fu et al. 2023: 'For a bio-cemented soil specimen to be tested for UCS, it has to gain enough self-integrity to stand alone without confinement, which requires a minimum Ccc of circa 3%'. Same source notes Ccc<2% suffices when confinement is available. For a free-standing cast object (this project) the 3% floor is the relevant one. This is the HARD GATE on 'complete solidification' in the source paper's own terms."
+    },
+    {
+      "name": "UCS of MICP-treated recycled construction & demolition waste sand (max achieved)",
+      "symbol": "q_u,RCA",
+      "value": 0.724,
+      "low": 0.341,
+      "high": 0.724,
+      "units": "MPa",
+      "evidence_class": "MEASURED",
+      "organism": "Sporosarcina pasteurii ATCC 11859",
+      "substrate": "washed recycled sand from demolition waste",
+      "source_doi": "10.1007/s11440-024-02396-8",
+      "source_title": "Factors affecting the MICP stabilization of washed recycled sands derived from demolition wastes",
+      "notes": "Optimum found at 0.5 mol/L cementation media, 30 C, up to 12 treatment cycles: 724 kPa. At 1 mol/L the mean was 490 +/- 149 kPa (hence low bound 490-149=341 kPa). MOST SUBSTRATE-RELEVANT NUMBER IN THIS TABLE: same waste-aggregate class as this project, and roughly 4x weaker than clean-sand MICP at comparable effort. Organism is still S. pasteurii, so the B. subtilis penalty is ON TOP of this."
+    },
+    {
+      "name": "UCS of a cast MICP bio-brick (masonry-unit geometry)",
+      "symbol": "q_u,brick",
+      "value": 2.7,
+      "low": 0.9,
+      "high": 2.7,
+      "units": "MPa",
+      "evidence_class": "MEASURED",
+      "organism": "Sporosarcina pasteurii (ureolytic), human urine as urea source",
+      "substrate": "sand in brick mould",
+      "source_doi": "10.1016/j.watres.2019.05.069",
+      "source_title": "Manufacturing bio-bricks using microbial induced calcium carbonate precipitation and human urine",
+      "notes": "Lambert & Randall 2019: highest UCS 2.7 MPa after 48 treatment cycles over 4 days; low bound 0.9 MPa is the synthetic-urine bio-column value they cite for comparison. The same source notes 2.7 MPa is slightly BELOW the South African minimum for non-facing bricks and well below conventional face brick (9-12.5 MPa) and non-face brick (3-10.5 MPa)."
+    },
+    {
+      "name": "Compressive strength of ordinary hollow concrete masonry unit (net area, code minimum)",
+      "symbol": "f_cmu",
+      "value": 13.8,
+      "low": 13.8,
+      "high": null,
+      "units": "MPa",
+      "evidence_class": "MEASURED",
+      "organism": "n/a",
+      "substrate": "Portland-cement concrete",
+      "source_doi": null,
+      "source_title": "ASTM C90 Standard Specification for Loadbearing Concrete Masonry Units",
+      "notes": "ASTM C90 minimum net-area compressive strength is 2000 psi = 13.8 MPa (reported consistently by CMHA CMU-TEC-001 and NCMA/CMHA TEK literature). BENCHMARK ONLY: MICP material at 0.7-3 MPa is 5-20x below this, so a bio-cemented unit cannot be treated as a structural CMU substitute."
+    },
+    {
+      "name": "Compressive strength of ordinary Portland-cement concrete (order of magnitude)",
+      "symbol": "f_c",
+      "value": 50.0,
+      "low": null,
+      "high": null,
+      "units": "MPa",
+      "evidence_class": "MEASURED",
+      "organism": "n/a",
+      "substrate": "Portland-cement concrete",
+      "source_doi": "10.1146/annurev-matsci-081720-105303",
+      "source_title": "Biomineralized Materials for Sustainable and Durable Construction",
+      "notes": "Beatty, Williams & Srubar 2022: biomineralized building materials reach compressive strength 'on the order of 5 MPa' (clay-brick class) whereas portland cement concrete is 'on the order of 50 MPa'. Same review: MICP-stabilized soils have achieved UCS up to 14 MPa."
+    },
+    {
+      "name": "Direct tensile strength of MICP-cemented sand",
+      "symbol": "sigma_t",
+      "value": null,
+      "low": 0.21,
+      "high": 0.71,
+      "units": "MPa",
+      "evidence_class": "MEASURED",
+      "organism": "Sporosarcina pasteurii",
+      "substrate": "Ottawa 20-30 / Ottawa 50-70 / Nevada sands (heavy cementation, Vs>=900 m/s)",
+      "source_doi": "10.1139/cgj-2019-0230",
+      "source_title": "Tensile strength of sands treated with microbially induced carbonate precipitation",
+      "notes": "Nafisi et al. 2020, nine direct-tension tests, CaCO3 3.8-14.4%: 210-710 kPa. Direct tension (JGS2552-2015 rate), which the same paper notes is more accurate than either bending (overestimates) or Brazilian splitting (underestimates)."
+    },
+    {
+      "name": "Tensile-to-compressive strength ratio of MICP-cemented sand",
+      "symbol": "sigma_t/q_u",
+      "value": 0.22,
+      "low": 0.19,
+      "high": 0.25,
+      "units": "dimensionless",
+      "evidence_class": "MEASURED",
+      "organism": "Sporosarcina pasteurii",
+      "substrate": "Ottawa 20-30 (0.25), Ottawa 50-70 (0.23), Nevada (0.19)",
+      "source_doi": "10.1139/cgj-2019-0230",
+      "source_title": "Tensile strength of sands treated with microbially induced carbonate precipitation",
+      "notes": "Nafisi et al. 2020: 'The magnitude of the ratio between tensile strength and unconfined compressive strength ranged from 0.19 to 0.25 depending upon the particle size.' Same paper: Portland-cemented sand ratio is 0.1-0.3. NOTE this ratio is HIGH for a brittle material (concrete is ~0.07-0.11) because MICP UCS is low, not because MICP is tough."
+    },
+    {
+      "name": "Brittleness ratio (compressive / tensile) of MICP-cemented sand",
+      "symbol": "B = q_u/sigma_t",
+      "value": 4.5,
+      "low": 4.0,
+      "high": 5.3,
+      "units": "dimensionless",
+      "evidence_class": "DERIVED",
+      "organism": "Sporosarcina pasteurii",
+      "substrate": "Ottawa/Nevada sands",
+      "source_doi": "10.1139/cgj-2019-0230",
+      "source_title": "Tensile strength of sands treated with microbially induced carbonate precipitation",
+      "notes": "DERIVED as the reciprocal of the measured ratio above: 1/0.25 = 4.0, 1/0.23 = 4.35, 1/0.19 = 5.26. Central 1/0.22 = 4.5."
+    },
+    {
+      "name": "Brittleness ratio (compressive / flexural) of lime mortar - PROXY",
+      "symbol": "B_lime = f_c/R_f",
+      "value": 4.6,
+      "low": 2.8,
+      "high": 8.9,
+      "units": "dimensionless",
+      "evidence_class": "DERIVED",
+      "organism": "n/a",
+      "substrate": "hydrated-lime (CL90) and natural-hydraulic-lime (NHL2/NHL3.5/NHL5) 1:3 mortars, 28 d to 1 yr",
+      "source_doi": "10.1016/j.jobe.2015.10.001",
+      "source_title": "An experimental evaluation of prediction models for the mechanical behavior of unreinforced, lime-mortar masonry under compression",
+      "notes": "DERIVED by dividing Costigan et al. 2015 Table 3 mortar compressive strength by flexural strength, mix by mix and age by age: 19 pairs, range 2.80-8.90, median 4.59. Worked examples: CL90 1 yr 1.4/0.5=2.80; NHL2 1 yr 2.7/0.6=4.50; NHL5 1 yr 13.3/2.9=4.59; NHL3.5 6 mo 8.9/1.0=8.90; cement-lime M6 6 mo 22.2/4.8=4.62. PROXY for a weak porous carbonate-bound composite - not a MICP measurement. Note flexural (modulus of rupture) overestimates true tensile strength, so the true compressive/tensile ratio is HIGHER than these numbers."
+    },
+    {
+      "name": "Axial strain at failure, tension vs compression (MICP sand)",
+      "symbol": "eps_f,t / eps_f,c",
+      "value": 0.1,
+      "low": null,
+      "high": null,
+      "units": "dimensionless",
+      "evidence_class": "MEASURED",
+      "organism": "Sporosarcina pasteurii",
+      "substrate": "Ottawa/Nevada sands",
+      "source_doi": "10.1139/cgj-2019-0230",
+      "source_title": "Tensile strength of sands treated with microbially induced carbonate precipitation",
+      "notes": "Nafisi et al. 2020: tensile failure strain 0.02-0.04%, compressive failure strain 0.21/0.36/0.28%; 'The ratio of the tensile strain at failure to that of unconfined compressive strength is about 0.1' - i.e. tensile failure arrives an order of magnitude earlier in strain. This is the quantitative statement of 'the crack starts at the corner'."
+    },
+    {
+      "name": "Failure mode of MICP bonds under tension",
+      "symbol": null,
+      "value": null,
+      "low": null,
+      "high": null,
+      "units": "qualitative",
+      "evidence_class": "MEASURED",
+      "organism": "Sporosarcina pasteurii",
+      "substrate": "silica sand / CaCO3 interface",
+      "source_doi": "10.1139/cgj-2019-0230",
+      "source_title": "Tensile strength of sands treated with microbially induced carbonate precipitation",
+      "notes": "Nafisi et al. 2020 surface-energy measurements (work of cohesion CaCO3 82.8 mJ/m2, work of adhesion CaCO3-silica 84.2 mJ/m2): 'cohesive failure within calcium carbonate bonds is more likely to occur than adhesive failure at particle contacts'. Cracks run THROUGH the carbonate, not along the grain surface - so bond volume at contacts, not grain coating, sets tensile capacity."
+    },
+    {
+      "name": "Kt for shoulder fillet, axial tension (Peterson chart values, h/r = 1)",
+      "symbol": "Kt",
+      "value": null,
+      "low": 1.79,
+      "high": 2.02,
+      "units": "dimensionless",
+      "evidence_class": "MEASURED",
+      "organism": "n/a",
+      "substrate": "elastic isotropic solid (steel EN31 in the FE study)",
+      "source_doi": "10.17576/jkukm-2023-35(1)-14",
+      "source_title": "Effect of Curved Surface of a Shoulder Fillet Round Bar on Stress Concentration Factor for Axial Tension Loading",
+      "notes": "Prajapati & Patel 2023 read Kt off the standard Peterson chart (Pilkey 1997) for their nine D/d cases with the fillet radius equal to the step height (h/r = 1) - see kt_vs_r_over_t array. Their independent FE values for the flat-plate equivalent fall at 1.29-2.56 over the same geometry set, bracketing the chart. LIMIT OF APPLICABILITY: these are SHOULDER fillets with r/d <= 0.25, i.e. a small radius on a large section - exactly the wrong regime for a groove cut deep into a thin tile. Use the Inglis curve for grooves."
+    },
+    {
+      "name": "Kt for a groove/notch of depth h with root radius r (equivalent-ellipse / Inglis)",
+      "symbol": "Kt",
+      "value": null,
+      "low": 2.155,
+      "high": 21.0,
+      "units": "dimensionless",
+      "evidence_class": "MEASURED",
+      "organism": "n/a",
+      "substrate": "elastic isotropic solid",
+      "source_doi": "10.23998/rm.124815",
+      "source_title": "Characterising the notch root radii and analyses of stress concentration factors near the dominant valleys of rough surface profiles",
+      "notes": "Gebrehiwot et al. 2023 Eq. (5), Inglis closed form: Kt = 1 + 2*sqrt(a/rho) with a the notch depth and rho the root radius. Reduces to the classical Kt = 3 for a semicircular notch (a = rho). Evaluated over r/h in kt_vs_r_over_t. CAVEAT FROM THE SAME PAPER: 'this method is applicable for shallow profiles that can be approximated to an elliptical geometry', and when benchmarked against FE for rough-surface valleys the Inglis and Neuber forms OVERESTIMATED Kt by more than 30%. Treat Inglis as a CONSERVATIVE UPPER BOUND, which is the right side to err on for a brittle cast object."
+    },
+    {
+      "name": "Kt for a sharp corner (chamfer or square-cut groove root)",
+      "symbol": "Kt_sharp",
+      "value": null,
+      "low": 7.3,
+      "high": null,
+      "units": "dimensionless",
+      "evidence_class": "DERIVED",
+      "organism": "n/a",
+      "substrate": "elastic isotropic solid",
+      "source_doi": "10.23998/rm.124815",
+      "source_title": "Characterising the notch root radii and analyses of stress concentration factors near the dominant valleys of rough surface profiles",
+      "notes": "DERIVED from the Inglis form: Kt = 1 + 2*sqrt(h/r) diverges as r -> 0. Arithmetic: r/h=0.10 -> Kt=1+2*sqrt(10)=7.32; r/h=0.05 -> 9.94; r/h=0.01 -> 21.0. A true chamfer or square root has r set by the mould resolution and the aggregate size, not by design, so Kt is unbounded in the model and set by manufacturing. THIS IS THE FORMAL VERSION OF THE TEAM'S 'any angle, even the obtuse angle of a chamfer, is a weak point'. The team's claim is correct and the fillet-vs-chamfer preference is supported."
+    },
+    {
+      "name": "Weibull modulus m (flaw-population scatter) for a porous cement-like composite",
+      "symbol": "m",
+      "value": null,
+      "low": 11.5,
+      "high": 16.8,
+      "units": "dimensionless",
+      "evidence_class": "MEASURED",
+      "organism": "n/a",
+      "substrate": "foamed concrete, wet density 600-800 kg/m3",
+      "source_doi": "10.1016/j.matdes.2024.112841",
+      "source_title": "Size effect on compressive strength of foamed concrete: Experimental and numerical studies",
+      "notes": "Jiang et al. 2024 Table 9 (Weibull size-effect fit log sigma_N = a - (n/m) log D): m = 11.85/11.53 (WD600), 13.95/14.04 (WD700), 16.76/16.42 (WD800), R2 0.96-0.999. Same source: m DECREASES as density decreases ('foamed concrete with a high porosity is brittle'), and these m are LOWER than the 14-34 reported for normal concrete because there are no stiff aggregates to stabilise crack propagation. WHY THIS MATTERS FOR NOTCH SENSITIVITY: a finite m means strength is set by the largest flaw in the stressed volume, so raising local stress by Kt raises the failure probability by roughly Kt^m - at m=12 a Kt of 1.5 cuts survival probability by ~130x. That is the flaw-based reason a brittle cast object cannot tolerate a sharp corner."
+    },
+    {
+      "name": "Statistical-to-Gaussian transition in quasibrittle strength distribution",
+      "symbol": null,
+      "value": null,
+      "low": null,
+      "high": null,
+      "units": "qualitative",
+      "evidence_class": "MEASURED",
+      "organism": "n/a",
+      "substrate": "quasibrittle materials (concretes, rocks, tough ceramics, bone)",
+      "source_doi": "10.1098/rspa.2018.0617",
+      "source_title": "Design of quasibrittle materials and structures to optimize strength and scaling at probability tail: an apercu",
+      "notes": "Bazant 2019: for quasibrittle failure the weakest-link chain has a FINITE number of links (each one RVE), so the strength distribution transits from Weibullian to Gaussian with structure size, and 'the most important consequence of the quasibrittleness ... is the size effect on the mean structural strength'. Consequence for this project: a small cast object made of a coarse composite has few RVEs, so its strength is highly scattered and a single dominant flaw (a groove root) controls it. Supports treating UCS as a distribution, not a value."
+    },
+    {
+      "name": "Total (autogenous + drying) shrinkage strain, aggregate-free cementitious mix, uncured",
+      "symbol": "eps_sh",
+      "value": 0.005269,
+      "low": 0.004797,
+      "high": 0.005269,
+      "units": "strain (m/m)",
+      "evidence_class": "MEASURED",
+      "organism": "n/a",
+      "substrate": "3D-printable cement/silica-fume/fly-ash mortar, no coarse aggregate",
+      "source_doi": "10.3390/ma13112590",
+      "source_title": "Effect of Curing Methods on Shrinkage Development in 3D-Printed Concrete",
+      "notes": "Federowicz et al. 2020: base mix average 28-day total shrinkage -5269 micro-m/m (sd <=327); with 2% shrinkage-reducing admixture -4797 and with 4% -3976 micro-m/m at 7 d. THESE ARE LARGE because the mix has no coarse aggregate to restrain it - the same situation as a fines-rich bio-cemented cast."
+    },
+    {
+      "name": "Total shrinkage strain when drying is suppressed by sealed curing",
+      "symbol": "eps_sh,sealed",
+      "value": 0.001031,
+      "low": 0.000347,
+      "high": 0.001031,
+      "units": "strain (m/m)",
+      "evidence_class": "MEASURED",
+      "organism": "n/a",
+      "substrate": "same 3D-printable mortar, foil-wrapped",
+      "source_doi": "10.3390/ma13112590",
+      "source_title": "Effect of Curing Methods on Shrinkage Development in 3D-Printed Concrete",
+      "notes": "Federowicz et al. 2020: foil isolation reduced maximum deformation to -1031 micro-m/m, i.e. 'only 20% of the deformations of the base mix'; at 3 h the sealed value was -347 vs -3443 micro-m/m unsealed. DESIGN CONSEQUENCE: humidity control is worth a 5x shrinkage reduction - far more than any admixture (4% SRA bought only 23%). This directly corroborates the source paper's split-mould + humidity-control strategy and its Fig 5 uneven-drying cracking."
+    },
+    {
+      "name": "Reference shrinkage strain for conventional concrete with coarse aggregate",
+      "symbol": "eps_sh,ref",
+      "value": null,
+      "low": 0.00033,
+      "high": 0.0015,
+      "units": "strain (m/m)",
+      "evidence_class": "MEASURED",
+      "organism": "n/a",
+      "substrate": "high-performance concrete (w/c 0.2-0.4) and aggregate-free mortars",
+      "source_doi": "10.3390/ma13112590",
+      "source_title": "Effect of Curing Methods on Shrinkage Development in 3D-Printed Concrete",
+      "notes": "Federowicz et al. 2020 literature summary: autogenous shrinkage 330-850 micro-m/m for w/c 0.2-0.4; ASTM C157 total shrinkage of HPC (w/c 0.25-0.36) 'rarely exceeds 800 micro-m/m'; aggregate-free mortars ~1200 micro-m/m long term; traditionally-prepared printable-mix specimens ~1500 micro-m/m at 28 d. Use the LOW end only if the mix carries real coarse aggregate."
+    },
+    {
+      "name": "Restrained-shrinkage cracking criterion: stress at crack initiation as a fraction of splitting tensile strength",
+      "symbol": "sigma_cr / f_ct,spl",
+      "value": 0.75,
+      "low": 0.75,
+      "high": 0.75,
+      "units": "dimensionless",
+      "evidence_class": "MEASURED",
+      "organism": "n/a",
+      "substrate": "early-age concrete, temperature-stress testing machine (TSTM)",
+      "source_doi": "10.3151/jact.2.141",
+      "source_title": "State-of-the-Art Report on Control of Cracking in Early Age Concrete",
+      "notes": "JCI report, citing van Breugel & Lokhorst 2001: 'the tensile stress at time of crack initiation was approximately 75% of the splitting tensile strength, regardless of the differences between the two cement types used (four different mixture proportions) and also regardless of the degree of hydration'. Same source: uniaxial tensile strength was ~88% of splitting tensile strength; the report's safety formulation assumes a coefficient of variation of 10% on shrinkage stress and 8% on splitting tensile strength. CRACK CRITERION FOR THE CHECKER: crack if sigma_restrained >= 0.75 * f_ct,spl, and the 8-10% CoVs give the Monte Carlo spread."
+    },
+    {
+      "name": "Maximum linear drying shrinkage permitted for a concrete masonry unit",
+      "symbol": "eps_sh,max,C90",
+      "value": 0.00065,
+      "low": null,
+      "high": null,
+      "units": "strain (m/m)",
+      "evidence_class": "MEASURED",
+      "organism": "n/a",
+      "substrate": "concrete masonry unit",
+      "source_doi": null,
+      "source_title": "ASTM C90 Standard Specification for Loadbearing Concrete Masonry Units",
+      "notes": "ASTM C90 limits linear drying shrinkage of units to 0.065% = 650 micro-strain (measured per ASTM C426), reported by CMHA/NCMA TEK. COMPARISON THAT MATTERS: the measured uncured aggregate-free mortar shrinkage above (5269 micro-strain) is 8x this limit; even sealed-cured (1031) is 1.6x. A bio-cemented fines-rich cast cannot meet the masonry-unit shrinkage spec without humidity control and coarse aggregate."
+    },
+    {
+      "name": "Differential drying across wall thickness as a cracking driver",
+      "symbol": null,
+      "value": null,
+      "low": null,
+      "high": null,
+      "units": "qualitative",
+      "evidence_class": "ASSUMED",
+      "organism": "n/a",
+      "substrate": "cement-like porous composite",
+      "source_doi": "10.3151/jact.2.141",
+      "source_title": "State-of-the-Art Report on Control of Cracking in Early Age Concrete",
+      "notes": "ASSUMED / MECHANISM-ONLY. The JCI report's analysis chain is explicitly sectional - 'calculation of unrestrained shrinkage strain distributions inside the member section' then 'calculation of restrained shrinkage and stress distributions' then crack analysis - i.e. the surface dries and shrinks while the core does not, and the core restrains the surface. It also notes that faster thermal loading 'can produce a thermal gradient through the mortar cross-section that needs to be considered'. NO citable numeric thickness/gradient threshold was found for a MICP or bio-cemented composite. Engineering basis for a checker rule: self-restraint stress scales with the surface-to-core moisture difference, which grows with section thickness and with drying rate, so cap thickness and slow the drying rather than trusting a threshold. The source paper's own Fig 5 (cracking from uneven drying) and Fig 6 (split mould, unified drying, humidity control) are the qualitative evidence that this governs here."
+    },
+    {
+      "name": "ASTM C90 minimum face-shell thickness, 8 in (203 mm) and wider nominal units",
+      "symbol": "t_fs,min",
+      "value": 32.0,
+      "low": 32.0,
+      "high": null,
+      "units": "mm",
+      "evidence_class": "MEASURED",
+      "organism": "n/a",
+      "substrate": "hollow loadbearing concrete masonry unit",
+      "source_doi": null,
+      "source_title": "ASTM C90 Standard Specification for Loadbearing Concrete Masonry Units (Table 1)",
+      "notes": "ASTM C90 Table 1 as reproduced in STRUCTURE magazine 'Just the FAQs'/'Changing Masonry Standards' (Thompson, NCMA): nominal width 3 in (76.2) and 4 in (102) -> 3/4 in (19 mm); 6 in (152) -> 1 in (25 mm); 8 in (203) and greater -> 1-1/4 in (32 mm). Solid-grouted units may drop to 5/8 in (16 mm) per footnote C. TEAM'S NOTE SAID ~3.2 cm FACE SHELL -> AGREES EXACTLY with the 8-in-and-wider row (1-1/4 in = 31.75 mm)."
+    },
+    {
+      "name": "ASTM C90 minimum individual web thickness (all unit widths)",
+      "symbol": "t_web,min",
+      "value": 19.0,
+      "low": 19.0,
+      "high": null,
+      "units": "mm",
+      "evidence_class": "MEASURED",
+      "organism": "n/a",
+      "substrate": "hollow loadbearing concrete masonry unit",
+      "source_doi": null,
+      "source_title": "ASTM C90 Standard Specification for Loadbearing Concrete Masonry Units (Table 1)",
+      "notes": "Since ASTM C90-11b the minimum web thickness is a single value, 3/4 in (19.1 mm), for ALL unit widths; it previously varied 0.75-1.125 in with nominal thickness (STRUCTURE, 'Changing Masonry Standards'). TEAM'S NOTE SAID ~2.5 cm WEB -> DISAGREES with the current standard, which permits 1.9 cm. The team's 2.5 cm matches the SUPERSEDED pre-2011 requirement for 6 in units (1 in = 25 mm). Their number is conservative, not wrong - keep it as a build rule but do not cite C90 for it."
+    },
+    {
+      "name": "ASTM C90 minimum normalized web area",
+      "symbol": "A_nw,min",
+      "value": 45140.0,
+      "low": null,
+      "high": null,
+      "units": "mm2 per m2 of face area",
+      "evidence_class": "MEASURED",
+      "organism": "n/a",
+      "substrate": "hollow loadbearing concrete masonry unit",
+      "source_doi": null,
+      "source_title": "ASTM C90 Standard Specification for Loadbearing Concrete Masonry Units (Table 1)",
+      "notes": "6.5 in2/ft2 = 45,140 mm2/m2, for all unit widths, replacing the older 'equivalent web thickness' requirement (STRUCTURE, 'Changing Masonry Standards'; ESCSI). The change was made because equivalent web thickness ignored webs that are notched or reduced in height. This is the right constraint form for a parametric generator: it is an AREA budget, so the tool can trade web count against web thickness as long as 45,140 mm2/m2 of face area is maintained and no single web is thinner than 19 mm."
+    },
+    {
+      "name": "Nominal hollow CMU module",
+      "symbol": null,
+      "value": null,
+      "low": null,
+      "high": null,
+      "units": "mm",
+      "evidence_class": "MEASURED",
+      "organism": "n/a",
+      "substrate": "hollow loadbearing concrete masonry unit",
+      "source_doi": null,
+      "source_title": "NCMA/CMHA TEK 02-01B, Typical Sizes and Shapes of Concrete Masonry Units",
+      "notes": "All standard full units share a nominal 8 in (203 mm) height and 16 in (406 mm) length; only the width varies (4, 6, 8, 10, 12 in). Actual dimensions are 3/8 in (9.5 mm) less than nominal to allow for the mortar joint, and overall dimensions may vary by no more than +/-1/8 in (3.2 mm). Molded features such as ribs and scores must be within +/-1/16 in (1.6 mm) of the specified dimension AND of the specified placement on the mould (CMHA CMU-TEC-001). TEAM'S NOTE SAID 20x20x40 cm -> this is the METRIC/ISO block module, NOT the ASTM one; ASTM nominal is 203x203x406 mm. Both exist; 190x190x390 mm actual is the metric-block convention. Treat 20x20x40 as nominal metric and 190x190x390 as its actual (jointed) size. The relief-tolerance number (+/-1.6 mm) is the one that constrains the panot-style groove geometry."
+    },
+    {
+      "name": "Void (core) fraction of a hollow concrete masonry unit",
+      "symbol": "void_ratio",
+      "value": null,
+      "low": 0.4,
+      "high": 0.5,
+      "units": "fraction of gross volume",
+      "evidence_class": "ASSUMED",
+      "organism": "n/a",
+      "substrate": "hollow loadbearing concrete masonry unit",
+      "source_doi": null,
+      "source_title": "ASTM C90 / ASTM C129 (solid-unit definition)",
+      "notes": "NOT FOUND AS A TABULATED C90 LIMIT. ASTM C90 constrains geometry through minimum face-shell thickness, minimum web thickness and minimum normalized web area, NOT through a void-ratio band. The only related tabulated figure retrieved is the definition of a SOLID unit: net cross-sectional area at least 75% of gross in every plane parallel to the bearing surface (NCMA/CMHA TEK 01-01F) - i.e. anything with more than 25% void is by definition hollow. The team's 40-50% void is a realistic description of as-built hollow blocks and is consistent with the thickness minima, but it is an engineering observation, not a standards limit. Mark ASSUMED in the checker and derive the achievable void fraction from the thickness rules instead."
+    },
+    {
+      "name": "Barcelona panot paving tile plan dimensions and thickness",
+      "symbol": null,
+      "value": null,
+      "low": null,
+      "high": null,
+      "units": "mm",
+      "evidence_class": "MEASURED",
+      "organism": "n/a",
+      "substrate": "hydraulic-cement paving flag",
+      "source_doi": null,
+      "source_title": "Ajuntament de Barcelona, Plec Tecnic de Pavimentacio (2017)",
+      "notes": "The municipal specification treats the 4 cm panot as the default sidewalk paving ('Com norma general farem servir el panot de 4cm sobre base de 15 cm de formigo') with an 8 cm panot only between the vehicle crossing and vehicle access, on a 20 cm concrete base; single-platform streets take flag or panot bedded with a 3 mm Portland-slurry joint. Plan size 20x20 cm and thickness 4 cm are confirmed as the standard piece by Catalan manufacturers (Mosaics Capdevila list 20x20x4, 20x20x2.5, 25x25x3, 30x30x3 and state 20x20x4 is the most common; MAUSA list 20x20 cm at 4 cm thick with 19.5x19.5 replacement pieces). TEAM'S NOTE SAID 20x20 cm, 4 cm thick -> AGREES."
+    },
+    {
+      "name": "Panot relief / groove depth",
+      "symbol": "h_relief",
+      "value": null,
+      "low": 2.0,
+      "high": 5.0,
+      "units": "mm",
+      "evidence_class": "MEASURED",
+      "organism": "n/a",
+      "substrate": "hydraulic-cement paving flag",
+      "source_doi": null,
+      "source_title": "Orden VIV/561/2010 (BOE-A-2010-4057), Art. 45",
+      "notes": "The Spanish accessibility order fixes the regulated maxima for indicator paving: directional paving is 'acanaladuras rectas y paralelas, cuya profundidad maxima sera de 5 mm' (straight parallel grooves, MAX DEPTH 5 mm), and warning paving uses truncated-cone studs of MAX HEIGHT 4 mm, with the remaining characteristics per UNE 127029. The Barcelona Plec Tecnic explicitly defers to this order for tactile panots ('haura de complir l'Ordre VIV-561/2010 (ranures, alcada botons...)'). TEAM'S NOTE SAID 2-3 mm relief -> CONSISTENT and conservative: it sits inside the regulated 5 mm ceiling. The team's ratio claim also holds: 5 mm / 40 mm = 12.5% ceiling, and their 2-3 mm is <10% of tile thickness as they state."
+    },
+    {
+      "name": "Panot recessed channel width",
+      "symbol": "w_channel",
+      "value": 10.0,
+      "low": null,
+      "high": null,
+      "units": "mm",
+      "evidence_class": "ASSUMED",
+      "organism": "n/a",
+      "substrate": "hydraulic-cement paving flag",
+      "source_doi": null,
+      "source_title": "not found in a citable specification",
+      "notes": "NOT FOUND. Neither the Ajuntament de Barcelona Plec Tecnic de Pavimentacio nor Orden VIV/561/2010 tabulates a groove/channel WIDTH for the decorative (flor de Barcelona / 4-pastilles) panot - the Plec specifies bedding, base thickness and joint width (3 mm) but not the relief pattern geometry, and the accessibility order regulates depth and stud height, deferring width to UNE 127029 (not retrievable here). EN 1339, the European concrete-paving-flag standard, explicitly 'does not deal with the tactility or visibility of flags'. The team's ~1 cm is retained as ASSUMED; it is dimensionally plausible for a footway drainage/slip channel and, at 10 mm, satisfies the bridging criterion below for d_max up to 3.3 mm."
+    },
+    {
+      "name": "ASTM C90 dimensional tolerance on molded relief features (ribs, scores)",
+      "symbol": null,
+      "value": 1.6,
+      "low": null,
+      "high": null,
+      "units": "mm",
+      "evidence_class": "MEASURED",
+      "organism": "n/a",
+      "substrate": "concrete masonry unit",
+      "source_doi": null,
+      "source_title": "CMHA CMU-TEC-001, Concrete Masonry Unit Shapes, Sizes, Properties, and Specifications",
+      "notes": "'Molded features such as ribs and scores must be within +/-1/16 in (1.6 mm) of the specified dimension and within +/-1/16 in (1.6 mm) of the specified placement on the mold.' This is the tightest geometric tolerance in the masonry standards and it is the one a parametric generator should respect: a 2-3 mm designed relief carries a +/-1.6 mm tolerance, i.e. +/-50-80%. Any relief shallower than ~3 mm is inside the manufacturing noise band."
+    },
+    {
+      "name": "ACI 318 nominal maximum coarse-aggregate size vs form width",
+      "symbol": "d_max <= W/5",
+      "value": 0.2,
+      "low": null,
+      "high": null,
+      "units": "fraction of narrowest form dimension",
+      "evidence_class": "MEASURED",
+      "organism": "n/a",
+      "substrate": "cast concrete",
+      "source_doi": null,
+      "source_title": "ACI 318-19 Section 26.4.2.1(a)(5)",
+      "notes": "ACI's own FAQ quotes 26.4.2.1(a)(5): nominal maximum size of coarse aggregate shall not exceed the LEAST of (i) one-fifth the narrowest dimension between sides of forms, (ii) one-third the depth of slabs, (iii) three-fourths the minimum specified clear spacing between reinforcing bars. INVERTED FOR THIS PROJECT: minimum castable wall/web thickness t >= 5*d_max, and minimum slab/tile thickness >= 3*d_max. At d_max = 4 mm that gives t >= 20 mm for a wall and >= 12 mm for a slab. The code adds that these limits may be waived if workability and consolidation permit placement without honeycombs or voids - which for a NON-VIBRATED bio-cemented cast is exactly the assumption that does not hold, so treat 5*d_max as binding rather than advisory."
+    },
+    {
+      "name": "ACI 318 clear-spacing rule expressed as an aggregate multiple",
+      "symbol": "s_min >= (4/3) d_agg",
+      "value": 1.333,
+      "low": null,
+      "high": null,
+      "units": "multiple of nominal max aggregate size",
+      "evidence_class": "DERIVED",
+      "organism": "n/a",
+      "substrate": "cast concrete",
+      "source_doi": null,
+      "source_title": "ACI 318-19 Section 25.2.1 / 26.4.2.1(a)(5)",
+      "notes": "DERIVED: rule (iii) says d_max <= (3/4)*s_clear; inverting gives s_clear >= (4/3)*d_max = 1.333*d_max. ACI 318 Section 25.2.1 states the same requirement directly as a spacing minimum, requiring the greatest of 1 in, d_b, or (4/3)d_agg. NOTE THE GAP: 1.333*d_max is a REINFORCEMENT-passage rule for VIBRATED concrete with a fluid mortar phase. It is roughly 2x LESS conservative than the granular bridging criterion below, and it is the wrong physics for a stiff, non-vibrated, fines-poor waste-aggregate mix. Use the bridging number."
+    },
+    {
+      "name": "Granular bridging / jamming criterion: critical aperture-to-particle ratio (3D outlet)",
+      "symbol": "R_c = D_outlet/d_particle",
+      "value": 4.94,
+      "low": 4.94,
+      "high": 6.0,
+      "units": "dimensionless",
+      "evidence_class": "MEASURED",
+      "organism": "n/a",
+      "substrate": "monodisperse spherical glass/steel/lead beads, flat-bottom 3D silo",
+      "source_doi": "10.1103/PhysRevE.71.051303",
+      "source_title": "Jamming during the discharge of granular matter from a silo",
+      "notes": "THE PRIMARY BRIDGING NUMBER. Zuriguel et al. 2005 measured ~50 orifice sizes and fitted the mean avalanche size to <s> = A/(Rc-R)^gamma with gamma = 6.9 +/- 0.2, A = 9900 +/- 100, and Rc = 4.94 +/- 0.03 for spherical beads, where R is the DIMENSIONLESS RADIUS R = phi/r (orifice RADIUS / bead RADIUS) - which equals the outlet-diameter-to-particle-diameter ratio, so Rc = 4.94 reads directly as 'aperture must exceed ~4.9 particle diameters'. Above Rc no jamming occurs (p = 1); below it, arching arrests flow. Bead material, density, elasticity and surface roughness had NO measurable effect - it is pure geometry. PARTICLE SHAPE DOES MATTER and raises Rc: the paper reports Rc = 5.05 for pasta grains and 6.0 for rice, and states 'the nearer to the spherical shape, the bigger <s> is and the lower Rc is'. CRUSHED CONSTRUCTION WASTE IS ANGULAR, SO USE THE UPPER END (6.0), NOT 4.94."
+    },
+    {
+      "name": "Bridging criterion for particles suspended in a liquid, constricted channel",
+      "symbol": "W_c/d",
+      "value": null,
+      "low": 3.0,
+      "high": 8.1,
+      "units": "dimensionless",
+      "evidence_class": "MEASURED",
+      "organism": "n/a",
+      "substrate": "non-Brownian particle suspension, 3D-printed millifluidic constriction",
+      "source_doi": "10.1039/D2SM00962E",
+      "source_title": "Influence of the solid fraction on the clogging by bridging of suspensions in constricted channels",
+      "notes": "Vani, Escudier & Sauret 2022, the WET analogue of the dry-silo number - closer to a bacteria/cementation-solution slurry than to a dry silo. Two thresholds: (a) ALWAYS CLOGS - 'a constricted system will eventually clog for small enough width to particle diameter ratio W/d < 3, even for small [solid fraction]'; (b) for a DENSE suspension near maximum packing they fit <s> = C/(Wc/d - W/d)^gamma with Wc/d = 8.1, gamma = 7.9, C = 3.7e7, and note that in this dense regime 'the clogging of the constriction seems to follow the behavior observed in silos for dry and immersed granular materials'. A stiff cast mix IS a dense suspension, so Wc/d ~ 8 is the relevant divergence, not 3."
+    },
+    {
+      "name": "Neck-to-particle ratio as the control parameter for clogging (review consensus)",
+      "symbol": "D/d",
+      "value": null,
+      "low": 3.0,
+      "high": 5.0,
+      "units": "dimensionless",
+      "evidence_class": "MEASURED",
+      "organism": "n/a",
+      "substrate": "granular and suspension flows through bottlenecks",
+      "source_doi": "10.1146/annurev-fluid-030124-112742",
+      "source_title": "Clogging of Noncohesive Suspension Flows",
+      "notes": "Marin & Souzy 2025 Annual Review: 'the neck-to-particle size ratio D/d is a control parameter for the clog formation process: A higher D/d means more escapees before a clog forms, and hence a lower probability of forming clogs', and the minimal clogging bridge is formed by n_min = (D/d)^2 + 1 particles. Concentrated suspensions are studied 'at constriction ratios typically larger than D/d ~ 3'. Zuriguel's own 2014 review (10.4279/pip.060014) corroborates the dry-silo figure: 'For spherical beads in a 3D silo, a divergence of the avalanche size was reported for an outlet diameter about 5 times the bead diameter', while noting the existence of a true critical size is settled in 3D but contested in 2D, with earlier engineering work suggesting R between 5 and 10."
+    },
+    {
+      "name": "Recommended minimum groove/channel width for the constraint checker",
+      "symbol": "w_min",
+      "value": null,
+      "low": 6.0,
+      "high": 8.0,
+      "units": "multiple of d_max",
+      "evidence_class": "DERIVED",
+      "organism": "n/a",
+      "substrate": "crushed construction-waste aggregate, cast as a dense stiff suspension",
+      "source_doi": "10.1039/D2SM00962E",
+      "source_title": "Influence of the solid fraction on the clogging by bridging of suspensions in constricted channels",
+      "notes": "DERIVED by combining the three retrieved criteria and taking the conservative branch of each. Arithmetic: (1) dry spherical hard floor Rc = 4.94 (Zuriguel 2005); (2) angular-particle correction from the SAME paper, rice Rc = 6.0, so 6.0 for crushed waste; (3) dense-suspension divergence Wc/d = 8.1 (Vani 2022); (4) absolute always-clogs floor W/d < 3 (Vani 2022). Recommend w_groove >= 6*d_max as the ACCEPT threshold and w_groove >= 8*d_max as the SAFE threshold; flag anything below 3*d_max as certain failure. AT d_max = 4 mm: accept >= 24 mm, safe >= 32 mm, certain-fail < 12 mm. THIS CONTRADICTS THE TEAM'S RULE of w >= 2-3*d_max (8-12 mm at d_max = 4 mm) BY A FACTOR OF 2-3: their 2*d_max sits AT the always-clogs boundary and their 3*d_max sits just above it, i.e. exactly in the regime where arching is guaranteed or near-certain. THIS IS THE MOST CONSEQUENTIAL DISAGREEMENT IN THIS TABLE."
+    },
+    {
+      "name": "Team's stated minimum fillet radius rule (assessment)",
+      "symbol": "r_min",
+      "value": null,
+      "low": 1.5,
+      "high": 2.0,
+      "units": "multiple of d_max",
+      "evidence_class": "ASSUMED",
+      "organism": "n/a",
+      "substrate": "crushed construction-waste aggregate",
+      "source_doi": "10.23998/rm.124815",
+      "source_title": "Characterising the notch root radii and analyses of stress concentration factors near the dominant valleys of rough surface profiles",
+      "notes": "THE TEAM'S RULE (r >= 1.5*d_max, target 2.0*d_max) HAS NO DIRECT LITERATURE SOURCE and is marked ASSUMED. It is however defensible on two retrieved grounds. (1) Stress: via the Inglis form Kt = 1 + 2*sqrt(h/r), a radius large relative to the local feature depth is what caps Kt; at r = 2*d_max = 8 mm on a 2-3 mm deep panot relief, r/h > 2.5 and Kt < 2.3, whereas a square root at the aggregate scale (r ~ 0.5 mm, h = 3 mm) gives Kt ~ 5.9. (2) Castability: the radius must exceed the particle size or the fillet cannot be filled by the aggregate at all. CAUTION - the fillet rule and the groove-width rule are NOT the same physics, and the team appears to have set both from the same 'multiples of d_max' intuition. The fillet multiple (1.5-2) is a fill/stress rule and is roughly right; the groove-width multiple (2-3) is a BRIDGING rule and is 2-3x too small."
+    },
+    {
+      "name": "Effect of particle size and gradation on achievable MICP strength",
+      "symbol": null,
+      "value": null,
+      "low": null,
+      "high": null,
+      "units": "qualitative",
+      "evidence_class": "MEASURED",
+      "organism": "Sporosarcina pasteurii",
+      "substrate": "fine/coarse aggregate mixtures, granular columns",
+      "source_doi": "10.1007/s11440-017-0604-7",
+      "source_title": "Effect of particle size distribution on the bio-cementation of coarse aggregates",
+      "notes": "Mahawish, Bouazza & Gates 2018: a GAP-GRADED distribution improves the UCS of bio-cemented coarse granular material; maximum UCS ~575 kPa at 75% coarse / 25% fine, and 'the maximum UCS achieved was not necessarily associated with the maximum calcium carbonate precipitation' because the fines supply extra bridging contacts. Terzis & Laloui 2018 (10.1038/s41598-018-19895-w) report the complementary effect: medium sand reached 3-12 MPa while FINE sand reached only ~2.5 MPa at the same bond content, because in coarse voids the carbonate precipitates 'on less effective locations, away from contacts between particles'. DESIGN CONSEQUENCE: there is an OPTIMUM d_max, not a monotonic penalty. Coarse waste needs fines added to build contact bridges; too fine and the carbonate is spread over too many contacts to bond any of them."
+    },
+    {
+      "name": "Organism mismatch penalty: B. subtilis vs S. pasteurii",
+      "symbol": null,
+      "value": null,
+      "low": null,
+      "high": null,
+      "units": "qualitative - NO NUMERIC TRANSFER FACTOR AVAILABLE",
+      "evidence_class": "ASSUMED",
+      "organism": "Bacillus subtilis (this project) vs Sporosarcina pasteurii (nearly all strength literature)",
+      "substrate": "n/a",
+      "source_doi": "10.1038/s41598-023-33070-w",
+      "source_title": "New non-ureolytic heterotrophic microbial induced carbonate precipitation for suppression of sand dune wind erosion",
+      "notes": "CRITICAL CAVEAT ON EVERY UCS ROW ABOVE. Every UCS and tensile value in this table was measured with S. pasteurii (or with free urease enzyme), which is selected precisely for its 'pronounced urease enzyme production aptitude'. NO PAPER WAS FOUND REPORTING UCS-vs-CaCO3 FOR B. SUBTILIS-CEMENTED GRANULAR MATERIAL, so no numeric transfer factor can be given. What IS retrievable: (a) Hemayati et al. 2023 ran non-ureolytic heterotrophic MICP with B. subtilis on calcium formate and calcium acetate, and found B. subtilis produced MORE CaCO3 than B. amyloliquefaciens, with formate-based compositions much better than acetate; the formate/B. subtilis composition reached 87% of its total carbonate within three days. This shows B. subtilis CAN precipitate usable carbonate via an OXIDATIVE (oxygen-consuming) pathway, which is consistent with the source paper's aerobic constraint. (b) Zhang et al. 2023 (10.1007/s12665-023-10899-y) Table 2 lists B. subtilis in cement mortar giving compressive strength +25.8%, splitting tensile +22.7%, flexural +22% (Suliman et al. 2018) and +15% (Pei et al. 2013) and +19.26% at 28 d (Vamped et al. 2011) - but these are ADDITIVE-TO-CEMENT percentages, not standalone bio-cement strengths, and cannot be converted. RECOMMENDATION FOR THE MONTE CARLO: sample UCS from the S. pasteurii distribution and apply an explicit, clearly-labelled ASSUMED derating factor with a wide range (suggest 0.3-0.7, uniform) representing the slower/weaker non-ureolytic pathway, and treat the result as an upper-bounded guess rather than a prediction. Flag it in output so it is never mistaken for measured data."
+    },
+    {
+      "name": "Oxygen requirement as a geometric constraint (aerobic pathway)",
+      "symbol": null,
+      "value": null,
+      "low": null,
+      "high": null,
+      "units": "qualitative",
+      "evidence_class": "MEASURED",
+      "organism": "Bacillus subtilis, Bacillus amyloliquefaciens",
+      "substrate": "sand dune",
+      "source_doi": "10.1038/s41598-023-33070-w",
+      "source_title": "New non-ureolytic heterotrophic microbial induced carbonate precipitation for suppression of sand dune wind erosion",
+      "notes": "The non-ureolytic pathway the project relies on is explicitly OXIDATIVE: the reported reaction chain consumes O2 (formate route HCOO- + O2 -> CO2 + H2O via formate dehydrogenase; acetate route CH3COO- + O2 -> CO2 + H2O), so carbonate production is limited by oxygen supply to the colony, not only by nutrient supply. This is the mechanistic backing for the source paper's finding that early attempts failed on 'incompatibility with microbial fermentation and optimal surface ratio for heterotrophic bacterial growth' and for the split-mould / hollow-interior geometry. It also means the surface-area-to-volume ratio is a FIRST-ORDER design variable for this organism in a way it is not for ureolytic MICP."
+    }
+  ],
+  "ucs_vs_caco3_points": [
+    {
+      "caco3_pct": 6.5,
+      "ucs_MPa": 2.5,
+      "organism": "Sporosarcina pasteurii",
+      "substrate": "Ottawa 20-30 coarse silica sand, D50~0.72 mm",
+      "source_doi": "10.1139/cgj-2019-0230",
+      "evidence_class": "MEASURED",
+      "note": "Nafisi et al. 2020 Table 3, specimen 10 (compression); CaCO3 6.5% (bottom section), UCS 2500 kPa"
+    },
+    {
+      "caco3_pct": 10.8,
+      "ucs_MPa": 3.04,
+      "organism": "Sporosarcina pasteurii",
+      "substrate": "Ottawa 50-70 medium silica sand",
+      "source_doi": "10.1139/cgj-2019-0230",
+      "evidence_class": "MEASURED",
+      "note": "Nafisi et al. 2020 Table 3, specimen 11; average CaCO3 10.8%, UCS 3040 kPa"
+    },
+    {
+      "caco3_pct": 13.9,
+      "ucs_MPa": 2.6,
+      "organism": "Sporosarcina pasteurii",
+      "substrate": "Nevada fine angular sand",
+      "source_doi": "10.1139/cgj-2019-0230",
+      "evidence_class": "MEASURED",
+      "note": "Nafisi et al. 2020 Table 3, specimen 12; average CaCO3 13.9%, UCS 2600 kPa. NOTE: finer sand needed MORE CaCO3 for the same strength"
+    },
+    {
+      "caco3_pct": 5.0,
+      "ucs_MPa": 3.0,
+      "organism": "Sporosarcina pasteurii (freeze-dried, cell-free ureolysis)",
+      "substrate": "medium-grained sand",
+      "source_doi": "10.1038/s41598-018-19895-w",
+      "evidence_class": "MEASURED",
+      "note": "Terzis & Laloui 2018: 'UCS of medium-grained bio-improved sand falls between 3 and 12 MPa for calcite bond contents in the range of 5% to 10%' - lower endpoint of stated range"
+    },
+    {
+      "caco3_pct": 10.0,
+      "ucs_MPa": 12.0,
+      "organism": "Sporosarcina pasteurii (freeze-dried, cell-free ureolysis)",
+      "substrate": "medium-grained sand",
+      "source_doi": "10.1038/s41598-018-19895-w",
+      "evidence_class": "MEASURED",
+      "note": "Terzis & Laloui 2018, same statement - upper endpoint of stated range"
+    },
+    {
+      "caco3_pct": 7.5,
+      "ucs_MPa": 2.5,
+      "organism": "Sporosarcina pasteurii (freeze-dried, cell-free ureolysis)",
+      "substrate": "fine-grained sand",
+      "source_doi": "10.1038/s41598-018-19895-w",
+      "evidence_class": "MEASURED",
+      "note": "Terzis & Laloui 2018: 'fine bio-improved sand reaches approximately 2.5 MPa for similar bond contents' (5-10%); 7.5% is the midpoint of the stated band, NOT a reported x-value"
+    },
+    {
+      "caco3_pct": 12.0,
+      "ucs_MPa": 2.333,
+      "organism": "Sporosarcina pasteurii",
+      "substrate": "Narmada River poorly graded sand",
+      "source_doi": "10.1016/j.jrmge.2020.11.006",
+      "evidence_class": "MEASURED",
+      "note": "Sharma et al. 2021 abstract: UCS up to 2333 kPa with 12% calcite after 18 d treatment (non-sterile conditions)"
+    },
+    {
+      "caco3_pct": null,
+      "ucs_MPa": 0.724,
+      "organism": "Sporosarcina pasteurii ATCC 11859",
+      "substrate": "washed recycled sand from construction & demolition waste",
+      "source_doi": "10.1007/s11440-024-02396-8",
+      "evidence_class": "MEASURED",
+      "note": "Fouladi et al. 2024: MAX UCS 724 kPa on the actual substrate class this project uses (C&D waste), 12 treatment cycles, 0.5 mol/L, 30 C. CaCO3 % not reported as mass fraction - the paper reports weight increase and water-absorption decrease instead. THIS IS THE SINGLE MOST SUBSTRATE-RELEVANT DATA POINT AND IT IS ~4x WEAKER THAN CLEAN SAND"
+    },
+    {
+      "caco3_pct": 1.4,
+      "ucs_MPa": 1.74,
+      "organism": "none - EICP, free urease enzyme + non-fat milk powder",
+      "substrate": "F-60 silica sand",
+      "source_doi": "10.1038/s41598-018-38361-1",
+      "evidence_class": "MEASURED",
+      "note": "Almajed et al. 2019 Solution 2: 1.65-1.82 MPa at <1.4% carbonate. NOT bacterial - included only to show that WHERE carbonate sits (interparticle contacts) beats HOW MUCH there is"
+    },
+    {
+      "caco3_pct": 1.4,
+      "ucs_MPa": 0.14,
+      "organism": "none - EICP, free urease enzyme, no milk powder",
+      "substrate": "F-60 silica sand",
+      "source_doi": "10.1038/s41598-018-38361-1",
+      "evidence_class": "MEASURED",
+      "note": "Almajed et al. 2019 Solution 1 baseline: 0.12-0.16 MPa at the SAME ~1.4% carbonate. 12x strength spread at identical CaCO3% - the strongest single argument against trusting any UCS = f(CaCO3%) fit"
+    },
+    {
+      "caco3_pct": null,
+      "ucs_MPa": 2.7,
+      "organism": "Sporosarcina pasteurii (ureolytic, human-urine substrate)",
+      "substrate": "sand, brick-shaped mould",
+      "source_doi": "10.1016/j.watres.2019.05.069",
+      "evidence_class": "MEASURED",
+      "note": "Lambert & Randall 2019: highest bio-brick UCS 2.7 MPa after 48 treatment cycles over 4 days. Reference point for a cast MICP masonry unit (not a soil column)"
+    }
+  ],
+  "ucs_vs_caco3_fit": {
+    "verdict": "NO USABLE POOLED FIT. Do not fit a single curve to the pooled points.",
+    "pooled_power_law": {
+      "form": "UCS_MPa = a * C^b",
+      "a": 2.4053,
+      "b": 0.143,
+      "r2_linear_space": -0.0378,
+      "r2_log_space": 0.0081,
+      "n": 7
+    },
+    "pooled_exponential": {
+      "form": "UCS_MPa = p * exp(q*C)",
+      "p": 3.0727,
+      "q": 0.0072,
+      "r2": -0.0445,
+      "n": 7
+    },
+    "pooled_linear": {
+      "form": "UCS_MPa = m*C + c",
+      "m": 0.0728,
+      "c": 3.3126,
+      "r2": 0.0043,
+      "n": 7
+    },
+    "interpretation": "All three pooled fits have R2 <= 0.01 and two are NEGATIVE in linear space, i.e. every functional form is worse than simply predicting the mean. This is not a fitting failure to be tuned away; it is the finding. Fu, Saracho & Haigh 2023 (10.1016/j.bgtech.2023.100002) reach the same conclusion from a far larger dataset: reported correlations are variously linear, polynomial and exponential, and 'the massive data discrepancy in Fig. 2a shows how difficult and unreliable it is to describe the relation with a single trendline', because substrate grading, reagent concentration, injection scheme and organism all move the curve. The Almajed 2019 pair in the points array is the cleanest demonstration: 0.14 MPa and 1.74 MPa at the SAME ~1.4% carbonate, a 12x spread, differing only in whether the carbonate landed at interparticle contacts.",
+    "recommended_within_study_relation": {
+      "form": "UCS_MPa = 0.12 * C^2.00   (equivalently 0.75*exp(0.2773*C))",
+      "basis": "Terzis & Laloui 2018 medium-grained sand, the two reported endpoints 3 MPa at 5% and 12 MPa at 10%; exponent solved exactly from log(12/3)/log(10/5) = 2.000, prefactor 3/5^2 = 0.12. TWO POINTS ONLY, SO NO R2 EXISTS - this is an exact interpolation between two stated values, not a regression.",
+      "valid_range_caco3_pct": [
+        5.0,
+        10.0
+      ],
+      "caveats": "Single study, single substrate (medium sand), single protocol, S. pasteurii, freeze-dried cell-free ureolysis. It is the STEEPEST credible relation retrieved (UCS quadratic in CaCO3%) and therefore the OPTIMISTIC bound. The same paper's fine sand reached only ~2.5 MPa over the same 5-10% band, i.e. a 5x lower plateau, which is why substrate must be a model input and not a constant."
+    },
+    "recommended_monte_carlo_treatment": "Do not sample UCS from a fitted curve. Sample it from the pooled literature envelope conditioned on substrate class: (i) require CaCO3 >= 3% or the object is not self-supporting at all (hard gate); (ii) for CLEAN SAND draw log-uniform or lognormal over 0.3-12 MPa with the Terzis quadratic as a soft central tendency; (iii) for CONSTRUCTION-WASTE / RECYCLED AGGREGATE - the actual substrate here - anchor on Fouladi et al. 2024 and draw over 0.34-0.72 MPa, which is 4-15x lower than clean sand and is the only measurement on this substrate class; (iv) then apply the explicit ASSUMED B. subtilis derating factor (suggest uniform 0.3-0.7) on top, labelled as an assumption in the output. The width of the resulting distribution is the honest answer and it is wide."
+  },
+  "kt_vs_r_over_t": [
+    {
+      "r_over_t": 0.01,
+      "Kt": 21.0,
+      "geometry": "groove/notch, root radius r over notch DEPTH h (r/h); Inglis equivalent-ellipse closed form Kt = 1 + 2*sqrt(h/r)",
+      "source": "10.23998/rm.124815 Eq.(5) (Gebrehiwot et al. 2023, after Inglis)"
+    },
+    {
+      "r_over_t": 0.05,
+      "Kt": 9.944,
+      "geometry": "groove/notch, r/h; Inglis",
+      "source": "10.23998/rm.124815 Eq.(5)"
+    },
+    {
+      "r_over_t": 0.1,
+      "Kt": 7.325,
+      "geometry": "groove/notch, r/h; Inglis",
+      "source": "10.23998/rm.124815 Eq.(5)"
+    },
+    {
+      "r_over_t": 0.15,
+      "Kt": 6.164,
+      "geometry": "groove/notch, r/h; Inglis",
+      "source": "10.23998/rm.124815 Eq.(5)"
+    },
+    {
+      "r_over_t": 0.2,
+      "Kt": 5.472,
+      "geometry": "groove/notch, r/h; Inglis",
+      "source": "10.23998/rm.124815 Eq.(5)"
+    },
+    {
+      "r_over_t": 0.25,
+      "Kt": 5.0,
+      "geometry": "groove/notch, r/h; Inglis",
+      "source": "10.23998/rm.124815 Eq.(5)"
+    },
+    {
+      "r_over_t": 0.3,
+      "Kt": 4.651,
+      "geometry": "groove/notch, r/h; Inglis",
+      "source": "10.23998/rm.124815 Eq.(5)"
+    },
+    {
+      "r_over_t": 0.4,
+      "Kt": 4.162,
+      "geometry": "groove/notch, r/h; Inglis",
+      "source": "10.23998/rm.124815 Eq.(5)"
+    },
+    {
+      "r_over_t": 0.5,
+      "Kt": 3.828,
+      "geometry": "groove/notch, r/h; Inglis",
+      "source": "10.23998/rm.124815 Eq.(5)"
+    },
+    {
+      "r_over_t": 0.75,
+      "Kt": 3.309,
+      "geometry": "groove/notch, r/h; Inglis",
+      "source": "10.23998/rm.124815 Eq.(5)"
+    },
+    {
+      "r_over_t": 1.0,
+      "Kt": 3.0,
+      "geometry": "SEMICIRCULAR notch, r = h; Inglis reduces to the classical Kt = 3",
+      "source": "10.23998/rm.124815 Eq.(5)"
+    },
+    {
+      "r_over_t": 1.5,
+      "Kt": 2.633,
+      "geometry": "groove/notch, r/h; Inglis",
+      "source": "10.23998/rm.124815 Eq.(5)"
+    },
+    {
+      "r_over_t": 2.0,
+      "Kt": 2.414,
+      "geometry": "groove/notch, r/h; Inglis",
+      "source": "10.23998/rm.124815 Eq.(5)"
+    },
+    {
+      "r_over_t": 3.0,
+      "Kt": 2.155,
+      "geometry": "groove/notch, r/h; Inglis",
+      "source": "10.23998/rm.124815 Eq.(5)"
+    },
+    {
+      "r_over_t": 0.0051,
+      "Kt": 1.94,
+      "geometry": "SHOULDER FILLET, r over the SMALLER shaft diameter d (r/d), D/d=1.01, step height h = r; axial tension",
+      "source": "10.17576/jkukm-2023-35(1)-14 Table 2, 'SCF from Peterson graph' column (Pilkey 1997 chart)"
+    },
+    {
+      "r_over_t": 0.0102,
+      "Kt": 2.0,
+      "geometry": "SHOULDER FILLET r/d, D/d=1.02, h=r; axial tension",
+      "source": "10.17576/jkukm-2023-35(1)-14 Table 3, Peterson column"
+    },
+    {
+      "r_over_t": 0.0249,
+      "Kt": 2.02,
+      "geometry": "SHOULDER FILLET r/d, D/d=1.05, h=r; axial tension",
+      "source": "10.17576/jkukm-2023-35(1)-14 Table 4, Peterson column"
+    },
+    {
+      "r_over_t": 0.0501,
+      "Kt": 1.89,
+      "geometry": "SHOULDER FILLET r/d, D/d=1.10, h=r; axial tension",
+      "source": "10.17576/jkukm-2023-35(1)-14 Table 5, Peterson column"
+    },
+    {
+      "r_over_t": 0.1002,
+      "Kt": 1.79,
+      "geometry": "SHOULDER FILLET r/d, D/d=1.20, h=r; axial tension",
+      "source": "10.17576/jkukm-2023-35(1)-14 Table 6, Peterson column"
+    },
+    {
+      "r_over_t": 0.1502,
+      "Kt": 1.83,
+      "geometry": "SHOULDER FILLET r/d, D/d=1.30, h=r; axial tension",
+      "source": "10.17576/jkukm-2023-35(1)-14 Table 7, Peterson column"
+    },
+    {
+      "r_over_t": 0.2501,
+      "Kt": 1.79,
+      "geometry": "SHOULDER FILLET r/d, D/d=1.50, h=r; axial tension",
+      "source": "10.17576/jkukm-2023-35(1)-14 Table 8, Peterson column"
+    }
+  ],
+  "kt_usage_note": "THE TWO FAMILIES ABOVE ARE NOT INTERCHANGEABLE AND r_over_t MEANS A DIFFERENT THING IN EACH - read the 'geometry' field. For the Inglis rows the normaliser is the NOTCH DEPTH h (r/h), which is the right non-dimensional group for a groove or flute cut into a tile: Kt is controlled by how sharp the root is relative to how deep the cut is, and it diverges as r -> 0. For the Peterson rows the normaliser is the SMALLER SHAFT DIAMETER d (r/d) at a shoulder step, valid only for r/d <= 0.25 with h/r = 1, and Kt stays in a narrow 1.79-2.02 band because the step height shrinks with the radius. FOR THE CONSTRAINT CHECKER: use Inglis for grooves, flutes and the panot relief; use the Peterson band as the sanity floor for a filleted shoulder or a change of section. Both are ELASTIC Kt for an isotropic homogeneous continuum - a bio-cemented waste aggregate is neither homogeneous nor isotropic at the aggregate scale, so treat Kt as a relative ranking of geometries rather than an absolute stress multiplier, and combine it with the Weibull argument (failure probability scales roughly as Kt^m with m ~ 12-17) to convert a geometry into a risk."
+}

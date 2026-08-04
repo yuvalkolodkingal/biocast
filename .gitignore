@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+.venv/
+env/
+*.egg-info/
+.DS_Store
+# regenerated meshes (see examples/regenerate_meshes.py)
+stl/designs/*_dmax4mm.stl
+stl/moulds/mould_block_*.stl
+out/

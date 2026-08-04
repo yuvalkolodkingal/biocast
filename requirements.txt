@@ -1,0 +1,12 @@
+numpy>=1.26
+scipy>=1.11
+trimesh>=4.0
+manifold3d>=2.3
+mapbox-earcut>=1.0
+scikit-image>=0.22
+shapely>=2.0
+rtree>=1.1
+pandas>=2.1
+matplotlib>=3.8
+# GUI only
+streamlit>=1.30
