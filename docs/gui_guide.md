@@ -23,6 +23,14 @@ re-diagnoses and re-scores in about a second. You get:
 - a verdict banner (castable / rejected) with the score and its 5–95 % interval
 - the four subscores, with the limiting one flagged — they multiply, so the
   weakest sets the total
+- a **3D shape preview** of the meshed body: drag to orbit, shift-drag to pan,
+  scroll to zoom. **Section** cuts it on an X, Y or Z plane and fills the cut face
+  in red, which is how to read a wall thickness, a block web or whether a cavity
+  actually closed; **Flip** takes the other half and **Facets** shades each
+  triangle flat, showing the voxel steps the geometry was marched at. The camera
+  and the section survive a slider move, so you can watch a wall thicken in
+  section. Untick *Show the 3D shape preview* if the ~0.5 MB per update is
+  awkward on a remote connection
 - geometry and transport tables, including the **measured** narrowest section
 - the full constraint table, each rule tagged by where it came from: *your notes*,
   *literature*, *standard*, or *geometry*
@@ -80,4 +88,21 @@ The third is what to build.
 `evaluate()` call returns everything the interface displays. To add a typology,
 write the grammar in `biocast/grammars/`, add it to `PITCH` and the dispatch dicts
 in `engine.py`, then add its slider block to `geom_controls` in `app.py`. No
-scoring code changes.
+scoring code changes, and the preview needs no changes at all — it draws whatever
+mesh `evaluate()` returns.
+
+## A note on the preview mesh
+
+`biocast/gui/viewer.py` is a self-contained WebGL canvas, so the GUI still needs
+nothing beyond Streamlit and fetches nothing from a CDN. Two consequences worth
+knowing:
+
+- **What you see is decimated, what you download is not.** Marching cubes gives
+  45k–113k triangles; above 50k the preview is vertex-clustered for display, and
+  the caption says so with both counts. `Download STL` always writes the
+  full-resolution mesh.
+- **The terracing is real.** The shell surface comes from a distance transform of
+  a *binary* voxelisation (`grammars/shell.py`), so it carries ~1 voxel of
+  stair-stepping, which *Facets* mode shows plainly. It is in the exported STL
+  too, and at a 2 mm pitch it is far below the tolerances the scores turn on —
+  but it is the mesh, not a rendering artefact.

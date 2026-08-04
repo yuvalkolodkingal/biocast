@@ -3,8 +3,8 @@
 Run:  PYTHONPATH=. streamlit run biocast/gui/app.py
 
 Three tabs:
-  Design    move sliders, see the mesh, the four subscores, and every constraint
-            verdict update live; download STL.
+  Design    move sliders, see the mesh in 3D, the four subscores, and every
+            constraint verdict update live; download STL.
   Process   the feasible window as a map — where the castability floor and drying
             ceiling cross, and what cure or sieve opens it.
   Explore   randomised search inside the current process settings, ranked.
@@ -22,6 +22,7 @@ import pandas as pd
 import streamlit as st
 
 from biocast.gui import engine as E
+from biocast.gui import viewer as V
 
 st.set_page_config(page_title="Bio-concrete design studio", layout="wide",
                    initial_sidebar_state="expanded")
@@ -189,6 +190,28 @@ def score_header(r: dict):
                f"{r['failure_mode_text']}")
 
 
+def preview_panel(r: dict):
+    """The mesh itself, before the tables that describe it."""
+    st.subheader("Shape preview")
+    mesh = r["_mesh"]
+    if len(mesh.faces) == 0:
+        st.warning("The mesh came back empty — nothing to draw. Check the geometry "
+                   "sliders; a wall thicker than the semi-axis leaves no solid.")
+        return
+    p = V.stl_viewer(mesh)
+    note = ("Drag to orbit, shift-drag to pan, scroll to zoom. **Section** slices the "
+            "body on a plane — the red faces are the cut, which is how to read wall "
+            "thickness, the cores, and whether a cavity actually closed.")
+    if p["nFacesFull"] > p["nFaces"]:
+        note += (f" The preview is simplified to {p['nFaces']:,} of "
+                 f"{p['nFacesFull']:,} triangles for display; the STL download below "
+                 "is the full-resolution mesh.")
+    st.caption(note)
+    if not r["watertight"]:
+        st.warning("This mesh is not watertight, so the preview may show holes and the "
+                   "volume-based numbers are unreliable.")
+
+
 def geometry_panel(r: dict):
     c1, c2 = st.columns([3, 2])
     with c1:
@@ -308,7 +331,12 @@ def window_figure(mix, proc, jam_ratio):
 # ----------------------------------------------------------------------------- tabs
 def tab_design(typology, mix, proc, jam_ratio, n_mc):
     geom_kw = geom_controls(typology, mix["d_max"])
-    show_field = st.checkbox(
+    c1, c2 = st.columns(2)
+    show_prev = c1.checkbox(
+        "Show the 3D shape preview", value=True,
+        help="Draws the meshed body in the browser. Turn it off if you are moving "
+             "sliders on a slow connection — it sends about 0.5 MB per update.")
+    show_field = c2.checkbox(
         "Solve the oxygen field (slower, shows the anoxic core)", value=False,
         help="Runs the reaction-diffusion solve and draws a mid-plane section.")
 
@@ -318,6 +346,9 @@ def tab_design(typology, mix, proc, jam_ratio, n_mc):
 
     score_header(r)
     st.markdown("---")
+    if show_prev:
+        preview_panel(r)
+        st.markdown("---")
     geometry_panel(r)
 
     if show_field:

@@ -143,6 +143,7 @@ biocast/
   gui/
     engine.py         one-call adapter — the only place the GUI touches physics
     app.py            Streamlit design studio
+    viewer.py         3D shape preview with a sectioning plane (no extra dependency)
 data/                 literature parameters (85 rows, 34 DOIs), sweep results
 docs/                 methods report, GUI guide, Grasshopper spec, figures
 examples/             mesh regeneration
