@@ -1,0 +1,16 @@
+# Runtime needs the package and data/*.json (the literature parameters engine.py
+# loads). Everything else is bulk: stl/ is 6.9 MB of regenerable meshes, docs/ 3.4 MB
+# of figures, and biocast/.venv is a stray 13 MB virtualenv that must never ship.
+.git
+.github
+.claude
+**/.venv
+**/__pycache__
+**/*.pyc
+stl/
+docs/
+examples/
+deploy/
+out/
+*.egg-info/
+.ipynb_checkpoints/
