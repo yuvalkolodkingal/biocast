@@ -23,17 +23,34 @@ import argparse
 from pathlib import Path
 
 from huggingface_hub import HfApi
+from huggingface_hub.utils import filter_repo_objects
 
 ROOT = Path(__file__).resolve().parents[1]
 
 #: Kept out of the Space. The runtime needs the package and data/*.json and nothing
 #: else; stl/ and docs/ are 10 MB of regenerable meshes and figures.
+#: Patterns are fnmatch, applied to the path relative to the repository root, and
+#: fnmatch's `*` spans "/". So `.venv/*` covers the whole tree, while a leading `**/`
+#: does NOT match at the root — `**/.venv/*` silently misses a root-level `.venv`,
+#: which is how a 10k-file virtualenv reached the Space on the first push. Both depths
+#: are therefore spelled out, and --dry-run runs these exact patterns.
 IGNORE = [
-    ".git*", ".git/*", ".github/*", ".claude/*",
-    "**/.venv/*", "**/__pycache__/*", "**/*.pyc",
+    ".git/*", ".gitignore", ".gitattributes", ".github/*", ".claude/*",
+    ".venv/*", "*/.venv/*",
+    "__pycache__/*", "*/__pycache__/*", "*.pyc",
     "stl/*", "docs/*", "examples/*", "deploy/*", "out/*",
+    "*.egg-info/*", ".ipynb_checkpoints/*",
     "README.md",                      # replaced by deploy/space_README.md
 ]
+
+
+def upload_set() -> list[str]:
+    """Exactly what `upload_folder` will send, via the same filter it uses. Kept as one
+    function so --dry-run cannot disagree with the real push — the first version of this
+    script reimplemented the filtering by hand and reported 32 clean files while the
+    upload sent 10,234."""
+    rel = (str(p.relative_to(ROOT)) for p in ROOT.rglob("*") if p.is_file())
+    return list(filter_repo_objects(rel, ignore_patterns=IGNORE))
 
 
 def main() -> None:
@@ -47,12 +64,7 @@ def main() -> None:
     args = ap.parse_args()
 
     if args.dry_run:                       # must work before `hf auth login`
-        files = [p for p in sorted(ROOT.rglob("*")) if p.is_file()]
-        keep = [p.relative_to(ROOT) for p in files
-                if not any(part in {".git", ".venv", "__pycache__", "stl", "docs",
-                                    "examples", "deploy", "out", ".claude", ".github"}
-                           for part in p.relative_to(ROOT).parts)
-                and p.name != "README.md"]
+        keep = sorted(upload_set())
         total = sum((ROOT / p).stat().st_size for p in keep)
         for p in keep:
             print(f"  {p}")

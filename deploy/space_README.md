@@ -7,7 +7,7 @@ sdk: docker
 app_port: 7860
 pinned: false
 fullWidth: true
-short_description: Cast geometries for B. subtilis bio-cementation, scored for success
+short_description: Scored cast geometries for B. subtilis bio-cementation
 ---
 
 # Bio-concrete design studio
