@@ -133,7 +133,16 @@ class SiliconeSpec:
     strain_sf: float = 4.0
     rho_g_cm3: float = 1.15         # 1.1-1.2 typical for filled RTV
 
-    o2_barrer: float = 520.0        # PDMS 350-800; 520 is mid-range
+    # MEASURED, not a chosen midpoint: 600 Barrer for O2 and 23000 Barrer for water
+    # on RTV 615 films (Blume et al. 1991), the pair recorded in
+    # data/elastomer_params.json as P_O2,sil and P_H2O,sil. An earlier default of
+    # 520 Barrer was a hand-picked mid-range value and reported 210x where the
+    # provenance-tagged file derives 294x, so the design record and the generator
+    # disagreed on the headline number. Both sit inside the 350-800 Barrer envelope
+    # and both say "sealed", but a report that contradicts its own parameter file is
+    # a defect regardless of whether the conclusion survives.
+    o2_barrer: float = 600.0        # PDMS envelope 350-800; 600 measured on RTV 615
+    h2o_barrer: float = 23000.0    # same source, same films
     wvtr_g_m2_day_at_50um: float = 2000.0
     E_free_evap_mm_day: float = 1.5  # stage-1/2 transition rate the drying model uses
 
@@ -170,24 +179,63 @@ def shore_a_to_E_MPa(shore_a: float) -> dict:
             "E_MPa": float(0.5 * (e_astm + e_gent))}
 
 
+#: Henry solubility of O2 in water at 30 C on a partial-pressure basis,
+#: mol/(m3 Pa): 0.234 mol/m3 dissolved at p_O2 = 0.2095 * 101325 Pa.
+S_O2_WATER = 1.102e-5
+
+
+def _p_sat_water(T_K: float) -> float:
+    """Saturation vapour pressure of water (Pa), Tetens over liquid.
+
+    Only used away from the 30 C cure temperature, where the steam-table value
+    4246 Pa is used directly. Tetens reproduces that to within ~0.3 % at 30 C, which
+    is checked in the test below rather than asserted.
+    """
+    t_c = T_K - 273.15
+    return 610.78 * float(np.exp(17.27 * t_c / (t_c + 237.3)))
+
+
 def barrier_diagnostics(spec: SiliconeSpec, *, wall_mm: float,
                         D_eff_gas_m2s: float, D_eff_sat_m2s: float,
-                        T_K: float = 303.15, L_dry_free_mm: float = 21.0) -> dict:
+                        T_K: float = 303.15, L_dry_free_mm: float = 21.0,
+                        rh_pct: float = 90.0, cure_days_ref: float = 28.0,
+                        phi_ref: float = 0.40, dS_ref: float = 0.5) -> dict:
     """Is the skin a barrier? Compare it to the pore network behind it.
 
     Permeability of a porous medium to a gas, expressed in the same units as a
     polymer permeability, is D_eff/(R T): flux = P dp / t. That is the comparison
     that decides cementation, and it is the one the "PDMS is permeable" intuition
     skips.
+
+    The two phases need DIFFERENT constitutive relations, and using one for both is
+    a real error rather than a simplification. In gas-filled pores the concentration
+    paired with a partial-pressure driving force is `C = p/(RT)`, so `P = D_eff/(RT)`.
+    In water-filled pores it is Henry's law, `C = S p`, so `P = D_eff * S` — and
+    `S_O2_water` is about 1.1e-5 mol/(m3 Pa) against `1/(RT)` ~ 4.0e-4, a factor of
+    36 apart. Applying the gas relation to the saturated case therefore overstates
+    saturated-pore permeability by ~36x and makes the skin look far more limiting
+    against wet pores than it is, which weakens the very asymmetry that explains why
+    the permeability intuition misleads.
     """
     P_sil = spec.o2_barrer * BARRER
     P_gas = D_eff_gas_m2s / (R_GAS * T_K)
-    P_sat = D_eff_sat_m2s / (R_GAS * T_K)
+    P_sat = D_eff_sat_m2s * S_O2_WATER
     t_sk, t_w = spec.skin_t * 1e-3, wall_mm * 1e-3
     Rs = t_sk / P_sil
     Rg = t_w / P_gas
     Rw = t_w / P_sat
-    wvtr = spec.wvtr_g_m2_day_at_50um * 0.05 / spec.skin_t
+    # WVTR from the MEASURED water permeability at the ACTUAL cure driving force,
+    # not by inverse-thickness scaling of a datasheet figure. The widely repeated
+    # "2000 g/(m2 day) at 50 um" has no retrievable source behind it and carries no
+    # test temperature or RH gradient (recorded as WVTR_tds, ASSUMED, in
+    # data/elastomer_params.json), and a supplier WVTR is quoted at full gradient
+    # and 38 C — worth a factor of ~15 on the driving force alone. Here the pore air
+    # inside is saturated and the chamber outside is at rh_pct, so:
+    #     flux = P_H2O * dp / t,  dp = p_sat(T) * (1 - RH)
+    P_h2o = spec.h2o_barrer * BARRER
+    p_sat = 4246.0 if abs(T_K - 303.15) < 1.0 else _p_sat_water(T_K)
+    dp = p_sat * (1.0 - rh_pct / 100.0)
+    wvtr = float(P_h2o * dp / t_sk * 18.015 * 86400.0)   # mol/(m2 s) -> g/(m2 day)
     free = 1500.0                       # g/m2/day free-water evaporation reference
     frac = wvtr / free
     return {
@@ -198,7 +246,14 @@ def barrier_diagnostics(spec: SiliconeSpec, *, wall_mm: float,
         "R_skin_over_R_saturated_wall": float(Rs / Rw),
         "skin_wvtr_g_m2_day": float(wvtr),
         "wvtr_frac_of_free_evap": float(frac),
-        "L_dry_behind_skin_mm": float(L_dry_free_mm * frac),
+        # Substitute the silicone-limited flux into the drying relation itself,
+        # L_dry = E t / (phi dS), rather than scaling the open-face L_dry by the flux
+        # ratio. The open-face value already carries its own (1 - RH) factor, so the
+        # ratio form applies that factor twice — the flux is ALREADY the
+        # RH-driven rate. That double-count reads 10x low (0.012 mm against 0.119 mm)
+        # and would disagree with data/elastomer_params.json's L_dry,skin row.
+        "L_dry_behind_skin_mm": float(
+            (wvtr / 1000.0) * cure_days_ref / (phi_ref * dS_ref)),
         "verdict": ("silicone face is effectively no-flux for both O2 and vapour; "
                     "only genuinely open area is atmosphere"),
     }
@@ -1226,9 +1281,12 @@ def build_silicone_mould(geom, spec: SiliconeSpec | None = None,
         "silicone_volume_mm3": v_sil, "silicone_core_volume_mm3": v_core_sil,
         "silicone_mass_g": mass,
         "section_budget": section_budget(draw, draft["draft_deg"]),
+        # The reference wall is the vessel's 26 mm — the section the design record's
+        # ratio is quoted against — so the number stays comparable across typologies
+        # instead of moving with each body's own drained depth.
         "barrier": barrier_diagnostics(
-            SiliconeSpec(**{**asdict(spec)}), wall_mm=2.0 * L_eff or 26.0,
-            D_eff_gas_m2s=D_gas, D_eff_sat_m2s=D_sat, L_dry_free_mm=L_dry),
+            spec, wall_mm=26.0, D_eff_gas_m2s=D_gas, D_eff_sat_m2s=D_sat,
+            L_dry_free_mm=L_dry, rh_pct=rh_pct),
         "transport": {"D_eff_gas_m2s": D_gas, "D_eff_sat_m2s": D_sat,
                       "L_gas_mm": L_gas, "L_dry_mm": L_dry, "L_eff_mm": L_eff,
                       "cure_days": cure_days, "rh_pct": rh_pct},

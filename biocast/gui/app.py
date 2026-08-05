@@ -675,16 +675,62 @@ def tab_mould(typology, mix, proc, jam_ratio):
                                for c, p, n in checks]),
                  hide_index=True, use_container_width=True)
 
-    st.markdown("#### Parts")
-    st.write(", ".join(f"`{p}`" for p in s["parts"]))
+    st.markdown("#### Parts and downloads")
+    roles = {p: E.PART_ROLE.get(p, "print") for p in s["parts"]}
+    n_print = sum(1 for r in roles.values() if r == "print")
+    st.dataframe(pd.DataFrame(
+        [{"part": p,
+          "you": "3D print" if r == "print" else "cast in silicone",
+          "note": ("the former you pour silicone into" if p.startswith("pour_shell")
+                   else "carries mix pressure; draft lives here"
+                   if p.startswith("jacket")
+                   else "the flexible part — do NOT print this"
+                   if r == "cast_silicone" else "")}
+         for p, r in roles.items()]),
+        hide_index=True, use_container_width=True)
+
+    if kind == "silicone":
+        st.caption(
+            "Two families are printed and one is cast. **The skin is not a printable "
+            "part** — a rigid copy of it fits the jacket and releases nothing. Print "
+            "the pour shell, cast the skin in it, print the jacket.")
+
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button(f"Prepare printable STLs ({n_print} parts)"):
+            with st.spinner("Meshing parts — marching cubes on every one…"):
+                blob, man = E.mould_stl_bundle(res, prefix=f"{kind}_{typology}",
+                                              roles=("print",))
+            st.session_state[f"stl_{kind}_{typology}"] = (blob, man)
+        key = f"stl_{kind}_{typology}"
+        if key in st.session_state:
+            blob, man = st.session_state[key]
+            st.download_button(
+                f"Download printable STLs ({len(blob)/1e6:.0f} MB)", blob,
+                file_name=f"mould_{kind}_{typology}_printable.zip",
+                mime="application/zip", type="primary")
+            st.caption("Includes MANIFEST.txt with the fabrication order, the "
+                       "open-faced cure requirement, and the disassembly order.")
+            st.dataframe(pd.DataFrame(man)[["file","volume_cm3","bbox_mm"]],
+                         hide_index=True, use_container_width=True)
+    with c2:
+        if kind == "silicone" and st.button("Prepare silicone parts too (reference)"):
+            with st.spinner("Meshing the cast parts…"):
+                blob2, man2 = E.mould_stl_bundle(res, prefix=f"{kind}_{typology}",
+                                                roles=("print", "cast_silicone"))
+            st.download_button(
+                f"Download all parts ({len(blob2)/1e6:.0f} MB)", blob2,
+                file_name=f"mould_{kind}_{typology}_all.zip", mime="application/zip")
+            st.caption("The skin meshes are for checking fit and estimating rubber "
+                       "volume — not for printing.")
+        st.download_button("Decisions + verification (JSON)",
+                           json.dumps(_jsonable(s), indent=1),
+                           file_name=f"mould_{kind}_{typology}.json",
+                           mime="application/json")
     st.caption(
-        "Parts are voxel occupancy grids — `mould.occ_to_mesh(res[name], "
-        "res['origin'], res['pitch'])` meshes one. Regenerate the full STL set "
-        "with `PYTHONPATH=. python examples/regenerate_moulds.py`.")
-    st.download_button("Download decisions + verification (JSON)",
-                       json.dumps(_jsonable(s), indent=1),
-                       file_name=f"mould_{kind}_{typology}.json",
-                       mime="application/json")
+        "Meshing is deferred to this button because it is the expensive step and "
+        "most sessions only want the numbers. The full set for all typologies is "
+        "`PYTHONPATH=. python examples/regenerate_moulds.py`.")
 
 
 def _jsonable(o):

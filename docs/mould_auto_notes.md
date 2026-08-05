@@ -275,7 +275,27 @@ two limits move together, in the same direction, for the same reason.
 **Conclusion: treat a mould face — silicone or rigid — as no-flux.** Only
 genuinely open area is atmosphere.
 
-### A number in this section was corrected
+### Two numbers in this section were corrected
+
+The generator originally defaulted to a hand-picked 520 Barrer mid-range value and
+reported the resistance ratio as 210x, where `data/elastomer_params.json` derives
+294x from the measured 600 Barrer. It also computed the drained depth behind the
+skin by scaling the open-face `L_dry` by the flux ratio, which applies the (1 - RH)
+factor twice — the silicone-limited flux already *is* the RH-driven rate — reading
+0.012 mm against the correct 0.119 mm. Both are fixed: `barrier_diagnostics` now
+takes its permeabilities from the measured pair (600 Barrer O2, 23 000 Barrer water,
+Blume et al. 1991, RTV 615) and substitutes the flux into the drying relation
+directly. All seven barrier quantities now agree with the provenance-tagged
+parameter file to within 0.26 %.
+
+A third error was fixed in the same pass: saturated-pore permeability was being
+computed with the gas relation `D_eff/(RT)` instead of Henry's law `D_eff * S`.
+Those differ by a factor of 36, and the gas form overstates wet-pore permeability —
+which weakens the very asymmetry that explains why the permeability intuition
+misleads. None of the three affects the geometry: the barrier block is diagnostic,
+and window sizing runs off the oxygen field solve.
+
+### The WVTR figure
 
 An earlier working value in this project put the skin WVTR at 16.7 g/(m²·day),
 scaled inverse-thickness from "2000 g/(m²·day) at 50 µm". No datasheet, paper or
