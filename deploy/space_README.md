@@ -20,13 +20,32 @@ with propagated uncertainty and an attributed failure mode.
 Built for the *Still Life* project (A. Ioshpe, I. Kolodkin-Gal, Scojen Institute for
 Synthetic Biology, Reichman University).
 
-**Three tabs**
+**Four tabs**
 
 - **Design** — move sliders, see the meshed body in 3D with a sectioning plane, the
   four subscores, every constraint verdict, and download the STL.
+- **Mould** — generate a printable mould for the shape you have dialled in, either a
+  rigid split negative or a silicone skin with a rigid jacket, and download the
+  printable STLs as a zip with a fabrication manifest. Nothing is hand-tuned per
+  shape: the parting plane comes from the measured re-entrant volume, the mould wall
+  from a plate-deflection target, the flange from what it must house, and integral
+  boss versus loose core from the kinematic release condition.
 - **Process window** — the castability floor against the drying ceiling, and what cure
   or sieve opens the window when they cross.
 - **Explore** — randomised search inside the current mix and cure settings, ranked.
+
+**A mould face does not breathe.** Both paths treat rigid and silicone mould faces as
+no-flux, so only genuinely open area acts as atmosphere. Silicone is highly
+oxygen-permeable in absolute terms and still carries ~294x the diffusive resistance of
+the drained pore network behind a 6 mm skin — it beats water and loses to air, which is
+why the permeability intuition misleads. A fully enclosed silicone skin cements
+**nothing**; the generator therefore sizes a breather lattice against the oxygen solve.
+Silicone earns its place by releasing without cavity draft, worth about 5 mm of section
+returned to the designer, not by transport.
+
+Mould generation on this Space runs at a coarsened voxel pitch, stated in the tab, so
+the solve fits the container's memory. Coverage is nearly pitch-independent, but
+regenerate locally at the grammar pitch for final print files.
 
 **Read the score honestly.** It ranks designs; it is *not* a calibrated probability, as
 no pass/fail dataset was available to fit it. The interval matters more than the median,

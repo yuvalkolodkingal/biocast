@@ -571,6 +571,15 @@ def tab_mould(typology, mix, proc, jam_ratio):
         res = E.generate_mould(typology, geom_kw, mix, proc, kind=kind,
                                skin_t=skin_t, deflect_target_mm=deflect)
     s = res["summary"]
+    if s["pitch_coarsened"]:
+        st.info(
+            f"Generated at **{s['pitch_mm']:.2f} mm voxel pitch** — {s['pitch_reason']}. "
+            "The silicone path holds several dozen full-grid arrays plus the oxygen "
+            "solve, and the grammar pitch exceeds the memory a hosted container has. "
+            "Coverage is nearly pitch-independent here (the tile reads 0.885 at 2.0 mm "
+            "against 0.879 at 3.0 mm), but read window diameter and skin thickness as "
+            "resolved to about this pitch. For final STLs regenerate locally at the "
+            "grammar pitch with `examples/regenerate_moulds.py`.")
 
     # ---- aeration first: it decides whether the mould can cement at all -----
     st.markdown("#### Will it cement in the mould?")

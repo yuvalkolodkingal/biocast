@@ -250,6 +250,61 @@ def solve_field(diag: dict, phys: sc.PhysicsInputs, proc: Process) -> dict:
             "resolution_warning": r.get("resolution_warning")}
 
 
+#: Voxel budget for a mould solve, in millions of voxels. Peak RSS measured on this
+#: machine scales close to linearly with grid size for the silicone path — 1.1 GB at
+#: 2.1 M voxels, 3.1 GB at 6.2 M — because the driver holds a few dozen full-grid
+#: boolean and float arrays plus the oxygen solve's sparse operator. The tile's
+#: grammar pitch of 1.2 mm is 43 M voxels, which extrapolates past 12 GB and did in
+#: fact OOM-kill a 15 GB kernel during development.
+#:
+#: 6 M is chosen to leave headroom on a 16 GB container while staying fine enough to
+#: resolve the features that matter: at pitch 2.0 the tile's windowed cemented
+#: fraction is 0.885 against 0.879 at pitch 3.0 — the physics is nearly pitch-
+#: independent here, so the cost of coarsening is small and the cost of not
+#: coarsening is a killed process with no result at all.
+MOULD_VOXEL_BUDGET_M = 6.0
+
+#: The rigid path is much lighter (1.25 GB at grammar pitch for all three
+#: typologies) because it carries no field solve, so it gets a larger budget and
+#: normally runs at the grammar's own pitch.
+MOULD_VOXEL_BUDGET_RIGID_M = 24.0
+
+
+def mould_pitch_for(typology: str, kind: str, *,
+                    budget_M: float | None = None) -> dict:
+    """Coarsest-acceptable pitch: the grammar's own unless the grid blows the budget.
+
+    A mould must be generated finer than the interactive scoring pitch — a 0.30 mm
+    key clearance and a 10 mm breather lattice cannot be represented on a 3 mm voxel
+    — but "as fine as the grammar" is not affordable for the silicone path on a
+    hosted container. Rather than silently coarsening or silently dying, this
+    returns the pitch AND the reason, which the caller surfaces.
+    """
+    from ..params import BlockParams, ShellParams, TileParams
+    grammar_pitch = {"shell": 1.25, "block": 2.0, "tile": 1.2}[typology]
+    # bounding box of the mould ENVELOPE, not the object: the flange and wall add
+    # roughly 2 x (wall + flange) to each in-plane span
+    span = {"shell": (240.0, 240.0, 300.0), "block": (520.0, 320.0, 320.0),
+            "tile": (380.0, 380.0, 160.0)}[typology]
+    budget = budget_M if budget_M is not None else (
+        MOULD_VOXEL_BUDGET_RIGID_M if kind == "rigid" else MOULD_VOXEL_BUDGET_M)
+
+    def n_voxels(p):
+        return (span[0] / p) * (span[1] / p) * (span[2] / p) / 1e6
+
+    p = grammar_pitch
+    if n_voxels(p) <= budget:
+        return {"pitch": p, "grid_M": n_voxels(p), "coarsened": False,
+                "reason": f"grammar pitch {p} mm fits the {budget:.0f} M voxel budget"}
+    # scale up to the budget, then round to a clean 0.25 mm step
+    p_need = p * (n_voxels(p) / budget) ** (1.0 / 3.0)
+    p = float(np.ceil(p_need / 0.25) * 0.25)
+    return {"pitch": p, "grid_M": n_voxels(p), "coarsened": True,
+            "reason": (f"coarsened {grammar_pitch} -> {p} mm: the grammar pitch needs "
+                       f"~{n_voxels(grammar_pitch):.0f} M voxels against a "
+                       f"{budget:.0f} M budget")}
+
+
 def generate_mould(typology: str, geom_kw: dict, mix_kw: dict, proc_kw: dict, *,
                    kind: str = "rigid", skin_t: float = 6.0,
                    deflect_target_mm: float = 0.10,
@@ -278,9 +333,15 @@ def generate_mould(typology: str, geom_kw: dict, mix_kw: dict, proc_kw: dict, *,
     proc = Process(**{k: v for k, v in proc_kw.items()
                       if k in Process.__dataclass_fields__})
 
+    # An explicit pitch is honoured; otherwise choose the finest that fits the voxel
+    # budget. Left unbounded, the silicone path needs >12 GB at the tile's grammar
+    # pitch and is killed by the container before it can report anything.
+    pchoice = ({"pitch": pitch, "grid_M": None, "coarsened": False,
+                "reason": "caller-specified pitch"} if pitch else
+               mould_pitch_for(typology, kind))
     spec = mauto.AutoSpec(d_max=mix.d_max, jam_mult=JAM_RATIO_LIT,
                           deflect_target_mm=deflect_target_mm,
-                          draft_deg=draft_deg, pitch=pitch or 0.0)
+                          draft_deg=draft_deg, pitch=pchoice["pitch"])
 
     if kind == "rigid":
         res = mauto.build_auto_mould(geom, spec)
@@ -364,6 +425,9 @@ def generate_mould(typology: str, geom_kw: dict, mix_kw: dict, proc_kw: dict, *,
     else:
         raise ValueError(f"kind must be 'rigid' or 'silicone', got {kind!r}")
 
+    summary["pitch_mm"] = res["pitch"]
+    summary["pitch_coarsened"] = pchoice["coarsened"]
+    summary["pitch_reason"] = pchoice["reason"]
     res["summary"] = summary
     return res
 
