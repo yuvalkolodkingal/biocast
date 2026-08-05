@@ -10,6 +10,10 @@ for the wrong reason produces a mould that cements nothing.
 
 ![Automatic mould generation, both paths](figures/mould_auto_overview.png)
 
+*Panel (c) is the result to read first. Windows recover the vessel (0.861) and
+tile (0.885) past the 0.85 criterion; the block reaches only 0.632 and is marked
+as missing it, because its limit is drying rather than open area — see §11.*
+
 ---
 
 ## Part I — rigid (FDM) path
