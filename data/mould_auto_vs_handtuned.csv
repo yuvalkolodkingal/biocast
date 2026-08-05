@@ -1,0 +1,3 @@
+typology,auto_parting,base_parting,auto_draft,base_draft,auto_wall,base_wall,auto_flange,base_flange,auto_flange_t,base_flange_t,auto_keybase,base_keybase,auto_bolts,base_bolts,auto_drains,base_drains,auto_gates,base_gates,auto_core,base_core
+shell,-17.25,-21.0,1.614,2.5,12.0,20.0,58.75,25.0,26.75,18.0,12.0,18.0,6,4,3,6,3,2,loose_core,loose_core
+block,-1.0,0.0,1.492,1.5,17.0,20.0,58.75,28.0,26.75,20.0,12.0,22.0,12,6,9,8,6,4,integral_boss,integral_boss

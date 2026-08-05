@@ -250,6 +250,188 @@ def solve_field(diag: dict, phys: sc.PhysicsInputs, proc: Process) -> dict:
             "resolution_warning": r.get("resolution_warning")}
 
 
+def generate_mould(typology: str, geom_kw: dict, mix_kw: dict, proc_kw: dict, *,
+                   kind: str = "rigid", skin_t: float = 6.0,
+                   deflect_target_mm: float = 0.10,
+                   draft_deg: float = 0.0, pitch: float | None = None) -> dict:
+    """Generate a mould for the current design and report its verification.
+
+    `kind="rigid"` -> `mould_auto.build_auto_mould` (printed FDM negative).
+    `kind="silicone"` -> `mould_silicone.build_silicone_mould` (elastomer skin plus
+    rigid jacket, breather lattice, pour shell).
+
+    The mould pitch is the GRAMMAR's default, not `PITCH[typology]`. The interactive
+    scoring pitches are coarsened for latency (block 3.0 mm, tile 1.6 mm), and a
+    mould carries features — a 0.30 mm key clearance, drains at 2.5 x d_max, a
+    breather lattice — that a 3 mm voxel cannot represent. A mould generated at the
+    scoring pitch would verify against its own discretisation rather than against
+    the geometry that gets printed.
+
+    Returns the raw driver dict plus a flat `summary` the GUI can table directly.
+    Nothing here decides anything: the drivers measure, and this only reshapes.
+    """
+    from .. import mould_auto as mauto
+    from .. import mould
+
+    geom = make_geom(typology, **geom_kw)
+    mix = Mix(**{k: v for k, v in mix_kw.items() if k in Mix.__dataclass_fields__})
+    proc = Process(**{k: v for k, v in proc_kw.items()
+                      if k in Process.__dataclass_fields__})
+
+    spec = mauto.AutoSpec(d_max=mix.d_max, jam_mult=JAM_RATIO_LIT,
+                          deflect_target_mm=deflect_target_mm,
+                          draft_deg=draft_deg, pitch=pitch or 0.0)
+
+    if kind == "rigid":
+        res = mauto.build_auto_mould(geom, spec)
+        dec = res["decisions"]
+        summary = {
+            "kind": "rigid",
+            "parting_axis": res["axis"],
+            "parting_coord_mm": res["parting"],
+            "parting_reason": dec["parting_analysis"]["reason"],
+            "core_strategy": dec["cores"]["strategy"],
+            "core_reason": dec["cores"]["reason"],
+            "mould_wall_mm": dec["wall"]["t_mm"],
+            "wall_deflection_mm": dec["wall"]["deflection_mm"],
+            "wall_meets_target": dec["wall"]["meets_target"],
+            "flange_mm": dec["flange"]["flange_mm"],
+            "draft_requested_deg": dec["draft"]["draft_deg"],
+            "relief_per_face_mm": dec["draft"]["relief_per_face_mm"],
+            "keys_chiral": res["keys_chiral_auto"][0],
+            "n_gate": res["n_gate"], "n_drain": res["n_drain"],
+            "n_bolt": res["n_bolt"],
+            "unattributed_mm3": res["balance"]["unattributed_mm3"],
+            "balance_exact": res["balance"]["exact"],
+            "parts": list(res["part_names"]),
+        }
+        # `auto_apertures` and `count_through_holes` are separate calls in the
+        # rigid driver rather than fields on its return, so run them here — a
+        # summary that reported None for "apertures pass" would read as "not
+        # checked" when the check is one call away.
+        aps = mauto.auto_apertures(res, spec)
+        chk = mould.check_apertures(aps, spec.d_max, jam_mult=spec.jam_mult,
+                                    certain_clog_mult=spec.clog_mult)
+        summary["apertures_pass"] = chk["all_passed"]
+        summary["apertures"] = chk["apertures"]
+        summary["through_holes"] = mauto.count_through_holes(res)
+    elif kind == "silicone":
+        from .. import mould_silicone as msil
+        sspec = msil.SiliconeSpec(skin_t=skin_t)
+        res = msil.build_silicone_mould(geom, sspec, spec,
+                                        cure_days=proc.cure_days, rh_pct=proc.rh_pct)
+        aer, win, bar = res["aeration"], res["window"], res["barrier"]
+        summary = {
+            "kind": "silicone",
+            "parting_axis": res["axis"],
+            "parting_coord_mm": res["parting"],
+            "skin_t_mm": res["skin_t_requested"],
+            "skin_t_realised_mm": res["skin_measured"]["t_p50_mm"],
+            "silicone_volume_mm3": res["silicone_volume_mm3"],
+            "silicone_mass_g": res["silicone_mass_g"],
+            "jacket_wall_mm": res["jacket_wall_mm"],
+            "jacket_adequate": res["jacket_wall"]["adequate"],
+            "window_d_mm": win["d_mm"], "window_spacing_mm": win["spacing_mm"],
+            "open_area_frac": aer["windowed"]["open_area_frac"],
+            "cemented_frac_enclosed": aer["enclosed_skin"]["cemented_frac_field"],
+            "cemented_frac_windowed": aer["windowed"]["cemented_frac_field"],
+            "cemented_frac_rigid_baseline":
+                aer["rigid_open_parting"]["cemented_frac_field"],
+            "meets_coverage": win["met_assembled"],
+            "coverage_limited_by": win["limited_by"],
+            # the finding that decides whether silicone is viable at all
+            "R_skin_over_R_drained_wall": bar["R_skin_over_R_drained_wall"],
+            "R_skin_over_R_saturated_wall": bar["R_skin_over_R_saturated_wall"],
+            "wvtr_frac_of_free_evap": bar["wvtr_frac_of_free_evap"],
+            "L_dry_behind_skin_mm": bar["L_dry_behind_skin_mm"],
+            "barrier_verdict": bar["verdict"],
+            "worst_undercut_strain_pct": res["undercut"]["worst_eps_pct"],
+            "allowable_strain_pct": res["undercut"]["allowable_eps_pct"],
+            "undercuts_ok": res["undercut"]["ok"],
+            "release_order_ok": res["release"]["order_ok"],
+            "release_control_interferes": res["release"]["control_interferes"],
+            "web_returned_mm": res["section_budget"]["web_returned_mm"],
+            "unattributed_mm3": res["balance"].get("unattributed_mm3",
+                                                   res["balance"].get("residual_void_mm3")),
+            "balance_exact": res["balance"]["exact"],
+            "parts": [k for k in res["_parts"]
+                      if k not in ("below", "obj", "form", "envelope",
+                                   "control_undrafted", "outer_body")],
+            "apertures_pass": res["apertures"]["all_passed"],
+            "apertures": res["apertures"]["apertures"],
+            "pour_shell_pourable": res["pour_apertures"]["pourable"],
+        }
+    else:
+        raise ValueError(f"kind must be 'rigid' or 'silicone', got {kind!r}")
+
+    res["summary"] = summary
+    return res
+
+
+def mould_aeration(proc_kw: dict, *, mould_res: dict) -> dict:
+    """Cemented fraction with a RIGID mould in place, as a sealed-face boundary.
+
+    The silicone driver computes this comparison itself (`res["aeration"]`, three
+    labelled cases with the full field solve) because window sizing depends on it.
+    The rigid path has no equivalent, and it needs one for the same reason: a rigid
+    mould face is no-flux too, so a closed rigid mould cements no better than a
+    closed silicone one. This supplies that comparison for `build_auto_mould`
+    output, using the cheap drained-depth criterion rather than the field solve —
+    which is stated in the return, because the two are not interchangeable.
+
+    `evaluate` scores the demoulded body: `fields.exposure_mask` treats every air
+    voxel connected to the grid boundary as atmosphere, which is right for a body
+    out of its mould and wrong for one still in it. In the mould the path from the
+    cast surface to the air runs through mould material, and both PETG and silicone
+    are no-flux on the timescale that matters — silicone despite being highly
+    oxygen-permeable in absolute terms, because the comparison that decides
+    cementation is against DRAINED PORES, which beat PDMS by about two and a half
+    orders of magnitude, and because a skin that throttles evaporation throttles
+    the drained network oxygen needs.
+
+    So this reports the same body under three boundary conditions — demoulded, fully
+    enclosed, and enclosed with only genuinely open area (breather windows, or an
+    open parting face on a split mould) — because the SPREAD is the design
+    information. A fully enclosed mould reproduces the source paper's Fig. 5
+    failure regardless of how good the geometry is.
+    """
+    phys = load_physics()
+    proc = Process(**{k: v for k, v in proc_kw.items()
+                      if k in Process.__dataclass_fields__})
+
+    occ = mould_res["obj"]
+    pitch = mould_res["pitch"]
+    # Parts are returned in the z-normal working frame, so the parting normal is
+    # axis 2 HERE regardless of which object axis it came from; `axis` in the record
+    # is the axis in the object's own frame and must not be used to index these.
+    k_part = mould_res["k_part"]
+    mould_occ = mould_res["lower"] | mould_res["upper"]
+
+    L_dry = dry.air_entry_depth(phys.E_evap[1], proc.cure_days or 28.0, phys.phi[1],
+                                delta_saturation=phys.dS_air_entry[1],
+                                rh_pct=proc.rh_pct)
+    out = {"L_dry_mm": float(L_dry)}
+    cases = {
+        "demoulded": fl.exposure_mask(occ),
+        "enclosed": fl.exposure_mask_in_mould(occ, mould_occ)["src"],
+        "open_faces_only": fl.exposure_mask_in_mould(
+            occ, mould_occ, parting_axis=2, parting_index=k_part,
+            open_parting_face=True)["src"],
+    }
+    for name, src in cases.items():
+        depth = fl.depth_field(occ, src, pitch)
+        d = depth[occ]
+        out[name] = {
+            "cemented_fraction": float(np.nanmean(d <= L_dry)),
+            "depth_max_mm": float(np.nanmax(d)),
+            "src_voxels": int(src.sum()),
+        }
+    out["note"] = ("cemented fraction here is the DRAINED-DEPTH criterion "
+                   "(depth <= L_dry), not the field solve; it is the cheap "
+                   "comparison across boundary conditions")
+    return out
+
+
 def feasible_window(d_max: float, cure_days: float, rh_pct: float,
                     jam_ratio: float = JAM_RATIO_LIT) -> dict:
     """The castability floor and drying ceiling on section thickness.

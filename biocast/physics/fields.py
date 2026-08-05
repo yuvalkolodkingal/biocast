@@ -99,6 +99,86 @@ def exposure_mask(occ: np.ndarray, *, parting_axis: int | None = None,
     return src
 
 
+def exposure_mask_in_mould(occ: np.ndarray, mould_occ: np.ndarray, *,
+                           parting_axis: int | None = None,
+                           parting_index: int | None = None,
+                           open_parting_face: bool = False) -> dict:
+    """Oxygen sources for a body sitting IN a mould, where mould faces are no-flux.
+
+    `exposure_mask` answers "which air can reach the atmosphere" for a bare body,
+    and every air voxel connected to the grid boundary qualifies. That is the right
+    question for a demoulded body and the wrong one for a body still in its mould:
+    the air path from the cast surface to the atmosphere runs through the mould wall,
+    which is solid. Using the bare mask on a moulded body silently grants a fully
+    enclosed cavity the same atmosphere access as an open-faced cast — and since the
+    aeration subscore saturates when everything looks exposed, every mould then
+    scores as if it were the paper's successful open-faced Fig. 6 case, including the
+    fully enclosed geometry that reproduces its Fig. 5 failure.
+
+    This matters more for an elastomeric mould than it looks. Silicone is highly
+    oxygen-permeable in absolute terms (350-800 Barrer for PDMS), which invites the
+    conclusion that a silicone skin breathes. It does not, because the comparison
+    that decides cementation is against DRAINED PORES, not against water:
+
+        drained-pore equivalent permeability  D_eff/(R T) ~ 2.3e-10 mol m/(m2 s Pa)
+        silicone at 520 Barrer                            ~ 1.7e-13
+        => a 6 mm skin carries ~300x the resistance of the 26 mm wall behind it
+
+    Against water-filled pores the same skin is transparent (~1e-3 of their
+    resistance), which is exactly why the intuition misleads: PDMS beats water and
+    loses to air by two and a half orders of magnitude. The vapour side compounds it
+    — a 6 mm silicone skin passes on the order of 1 % of the free evaporation rate,
+    and since oxygen only travels far through pores evaporation has already drained,
+    throttling drying throttles aeration too.
+
+    So both rigid and elastomeric mould faces are treated as no-flux here, and only
+    genuinely OPEN area — breather windows, the open parting face of a split mould,
+    an aperture that is not covered by mould — acts as atmosphere. `mould_occ` must
+    be on the same grid as `occ`; `mould_auto` returns its parts on the object's
+    grid for this reason.
+
+    Returns the mask plus the open-area bookkeeping, because "what fraction of the
+    cast surface is actually open" is the number that decides whether a mould can
+    cement at all, and it should be reported rather than left implicit.
+    """
+    air = ~occ & ~mould_occ                      # void that is neither cast nor mould
+    pad = np.pad(air, 1, constant_values=True)
+    lbl, _ = ndimage.label(pad)
+    connected = (lbl == lbl[0, 0, 0])[1:-1, 1:-1, 1:-1]
+    src = air & connected
+
+    if open_parting_face and parting_axis is not None and parting_index is not None:
+        # A split mould cured open-faced: the parting plane is atmosphere even where
+        # mould material flanks it. This is the ONE case where mould geometry does not
+        # block, and it is the mechanism behind the paper's successful cast — so it is
+        # opt-in rather than assumed, because assembling the halves early converts
+        # that face back into a sealed interface.
+        sl = [slice(None)] * 3
+        sl[parting_axis] = slice(max(parting_index, 0), parting_index + 1)
+        slab = np.zeros_like(occ)
+        slab[tuple(sl)] = True
+        src = src | (slab & ~mould_occ)
+
+    def _contact(mask):
+        n = 0
+        for ax in range(3):
+            for shift in (1, -1):
+                nb = np.roll(mask, shift, axis=ax)
+                idx = [slice(None)] * 3
+                idx[ax] = 0 if shift == 1 else -1
+                nb[tuple(idx)] = False
+                n += int((occ & nb).sum())
+        return n
+
+    open_faces = _contact(src)
+    sealed_faces = _contact(mould_occ)
+    total = open_faces + sealed_faces
+    return {"src": src, "open_faces": open_faces, "sealed_faces": sealed_faces,
+            "open_area_frac": float(open_faces / max(total, 1)),
+            "note": ("mould faces treated as no-flux; only open area is atmosphere"
+                     if total else "no cast/mould contact found — check grids align")}
+
+
 def depth_field(occ: np.ndarray, src: np.ndarray, pitch: float) -> np.ndarray:
     """Distance (mm) from every solid voxel to the nearest oxygen source voxel."""
     # EDT of the complement of the source set gives distance-to-source everywhere

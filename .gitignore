@@ -8,4 +8,10 @@ env/
 # regenerated meshes (see examples/regenerate_meshes.py)
 stl/designs/*_dmax4mm.stl
 stl/moulds/mould_block_*.stl
+# automatic moulds, rigid and silicone (~291 MB for the full set) — a mesh is a
+# derived artefact of the field, so it is rebuilt rather than stored:
+#   PYTHONPATH=. python examples/regenerate_moulds.py --out stl/moulds_auto
+stl/moulds_auto/
 out/
+# transient matplotlib view dumps
+_view_*.png
