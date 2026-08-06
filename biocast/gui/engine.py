@@ -270,6 +270,34 @@ MOULD_VOXEL_BUDGET_M = 6.0
 MOULD_VOXEL_BUDGET_RIGID_M = 24.0
 
 
+#: Envelope volume actually ALLOCATED by each driver, in units of 1e6 mm^3, so that
+#: `n_voxels_M(p) = ENVELOPE_K[kind][typology] / p**3`.
+#:
+#: These are MEASURED off each driver's own grid, not computed from a bounding box.
+#: An earlier version of this function used a hand-written per-typology span dict,
+#: and it was wrong in the direction that defeats the purpose: it put the tile
+#: silicone envelope at 380x380x160 mm where the driver actually allocates ~450 mm
+#: cubed, so it chose a pitch whose real grid was ~10.7 M voxels against a stated
+#: 6 M budget. A guard calibrated on a guess is worse than no guard, because it
+#: reports safety it has not checked.
+#:
+#: Measurement (grid shape read from the driver's return, K = n_M * p^3):
+#:   rigid    p=3.0  shell (89,89,62)=0.49M  block (190,124,80)=1.88M  tile (123,123,26)=0.39M
+#:   silicone p=4.0  shell (93,93,104)=0.90M  block (167,117,117)=2.29M
+#:   silicone p=3.0  tile  (149,149,96)=2.13M
+#: The silicone envelope is several times the rigid one because it must contain the
+#: jacket and the pour shell as well as the cast body.
+ENVELOPE_K = {
+    "rigid":    {"shell": 13.3, "block": 50.9, "tile": 10.6},
+    "silicone": {"shell": 57.6, "block": 146.3, "tile": 57.6},
+}
+
+#: Peak RSS runs about 0.5 GB per million voxels for the silicone path (measured:
+#: 2.1 M -> 1.12 GB, 6.2 M -> 3.08 GB, 10.7 M -> 4.29 GB including STL bundling), so
+#: the voxel budget is really a memory budget in disguise.
+GB_PER_M_VOXEL = 0.5
+
+
 def mould_pitch_for(typology: str, kind: str, *,
                     budget_M: float | None = None) -> dict:
     """Coarsest-acceptable pitch: the grammar's own unless the grid blows the budget.
@@ -279,29 +307,33 @@ def mould_pitch_for(typology: str, kind: str, *,
     — but "as fine as the grammar" is not affordable for the silicone path on a
     hosted container. Rather than silently coarsening or silently dying, this
     returns the pitch AND the reason, which the caller surfaces.
+
+    Grid size is estimated from the MEASURED envelope constant for this
+    (kind, typology), and `generate_mould` checks the realised grid against the
+    estimate afterwards so a bad constant shows up as a reported mismatch rather
+    than as an out-of-memory kill.
     """
-    from ..params import BlockParams, ShellParams, TileParams
     grammar_pitch = {"shell": 1.25, "block": 2.0, "tile": 1.2}[typology]
-    # bounding box of the mould ENVELOPE, not the object: the flange and wall add
-    # roughly 2 x (wall + flange) to each in-plane span
-    span = {"shell": (240.0, 240.0, 300.0), "block": (520.0, 320.0, 320.0),
-            "tile": (380.0, 380.0, 160.0)}[typology]
+    K = ENVELOPE_K[kind][typology]
     budget = budget_M if budget_M is not None else (
         MOULD_VOXEL_BUDGET_RIGID_M if kind == "rigid" else MOULD_VOXEL_BUDGET_M)
 
     def n_voxels(p):
-        return (span[0] / p) * (span[1] / p) * (span[2] / p) / 1e6
+        return K / p ** 3
 
     p = grammar_pitch
     if n_voxels(p) <= budget:
-        return {"pitch": p, "grid_M": n_voxels(p), "coarsened": False,
-                "reason": f"grammar pitch {p} mm fits the {budget:.0f} M voxel budget"}
-    # scale up to the budget, then round to a clean 0.25 mm step
-    p_need = p * (n_voxels(p) / budget) ** (1.0 / 3.0)
+        return {"pitch": p, "grid_M": n_voxels(p), "budget_M": budget,
+                "est_peak_GB": n_voxels(p) * GB_PER_M_VOXEL, "coarsened": False,
+                "reason": (f"grammar pitch {p} mm needs ~{n_voxels(p):.1f} M voxels, "
+                           f"inside the {budget:.0f} M budget")}
+    p_need = (K / budget) ** (1.0 / 3.0)
     p = float(np.ceil(p_need / 0.25) * 0.25)
-    return {"pitch": p, "grid_M": n_voxels(p), "coarsened": True,
+    return {"pitch": p, "grid_M": n_voxels(p), "budget_M": budget,
+            "est_peak_GB": n_voxels(p) * GB_PER_M_VOXEL, "coarsened": True,
             "reason": (f"coarsened {grammar_pitch} -> {p} mm: the grammar pitch needs "
-                       f"~{n_voxels(grammar_pitch):.0f} M voxels against a "
+                       f"~{n_voxels(grammar_pitch):.0f} M voxels "
+                       f"(~{n_voxels(grammar_pitch)*GB_PER_M_VOXEL:.0f} GB) against a "
                        f"{budget:.0f} M budget")}
 
 
@@ -428,6 +460,21 @@ def generate_mould(typology: str, geom_kw: dict, mix_kw: dict, proc_kw: dict, *,
     summary["pitch_mm"] = res["pitch"]
     summary["pitch_coarsened"] = pchoice["coarsened"]
     summary["pitch_reason"] = pchoice["reason"]
+
+    # Check the ESTIMATE against the grid the driver actually allocated. An envelope
+    # constant that drifts (a grammar gains a feature, a flange rule changes) would
+    # otherwise show up as an out-of-memory kill with no diagnosis; here it shows up
+    # as a number the caller can read. The realised K is reported so the constant
+    # above can be corrected from a run rather than re-derived by hand.
+    grid = (res["lower"] if kind == "rigid" else res["_parts"]["envelope"]).shape
+    n_real = float(np.prod(grid)) / 1e6
+    summary["grid_M_realised"] = n_real
+    summary["grid_M_estimated"] = pchoice.get("grid_M")
+    summary["envelope_K_realised"] = n_real * res["pitch"] ** 3
+    if pchoice.get("grid_M"):
+        summary["grid_estimate_ratio"] = n_real / pchoice["grid_M"]
+        summary["over_budget"] = bool(
+            pchoice.get("budget_M") and n_real > 1.15 * pchoice["budget_M"])
     res["summary"] = summary
     return res
 
