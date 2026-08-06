@@ -141,13 +141,14 @@ happens to have the widest interval.
 ```python
 rec = E.mould_record("shell", {}, dict(d_max=4.0),
                      dict(cure_days=21, rh_pct=85), kind="silicone")
-open("mould.zip", "wb").write(rec["zip"])         # every part, filed by role
-print(rec["summary"]["pillars"], rec["summary"]["cavity_matches_skin"])
+open("mould.zip", "wb").write(rec["zip"])         # jacket_a, jacket_b, core
+print(rec["manufacturable"], rec["summary"]["checks"])
 ```
 
-One call solves, verifies, meshes and bundles, and returns plain data — no voxel grids
-— so the result is cheap to hold and the archive always exists alongside the numbers
-that describe it.
+One call generates, checks and bundles, in a couple of seconds, and returns plain
+data — no voxel grids — so the result is cheap to hold and the archive always exists
+alongside the numbers that describe it. `kind="rigid"` gives a split negative to pour
+the mix straight into.
 
 ---
 
@@ -193,9 +194,8 @@ biocast/
   constraints.py      machine-checkable rule set, each rule tagged TEAM / LIT / STD / GEOM
   score.py            composite estimator with Monte Carlo uncertainty
   mould.py            split-mould negative generation (hand-tuned typologies)
-  mould_auto.py       rigid printed mould for any grammar, every literal measured
-  mould_silicone.py   silicone skin + rigid jacket, breather lattice, and the
-                      printed former + master pattern the skin itself is cast in
+  mould_cast.py       mould generation by mesh CSG: a rigid split negative, or
+                      two-pour silicone tooling with an oxygen-sized breather lattice
   grammars/
     sdf.py            signed-distance primitives and rounded CSG
     shell.py          hollow ovoid vessel — the proven typology
@@ -226,7 +226,8 @@ stl/                  representative meshes (large ones are regenerated, see bel
 | [docs/gui_guide.md](docs/gui_guide.md) | running the design studio and reading its output honestly |
 | [docs/grasshopper_spec.md](docs/grasshopper_spec.md) | rebuilding in Rhino/Grasshopper, including what has no equivalent there |
 | [docs/mould_notes.md](docs/mould_notes.md) | parting planes, draft, registration keys, vent sizing, print settings |
-| [docs/mould_auto_notes.md](docs/mould_auto_notes.md) | automatic mould generation, both paths: what is measured rather than tuned, why a silicone face does not breathe, and the six defects that made the printed former unbuildable (§18) |
+| [docs/mould_cast_notes.md](docs/mould_cast_notes.md) | the current mould generator: silhouette-offset tooling, the searched parting axis, and the four checks that remain |
+| [docs/mould_auto_notes.md](docs/mould_auto_notes.md) | **superseded**, kept for its transport findings: why a silicone face does not breathe, and why an enclosed skin cements nothing |
 | [docs/design_space_summary.md](docs/design_space_summary.md) | the 6912-cell sweep: what was feasible and why the rest failed |
 | [docs/micp_kinetics_summary.md](docs/micp_kinetics_summary.md) | oxygen transport and kinetics literature |
 | [docs/mechanics_summary.md](docs/mechanics_summary.md) | strength, jamming, and standards literature |

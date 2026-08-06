@@ -5,13 +5,13 @@ Run:  PYTHONPATH=. streamlit run biocast/gui/app.py
 Four tabs:
   Design    move sliders, see the mesh in 3D, the four subscores, and every
             constraint verdict update live; download STL.
-  Mould     generate, verify and mesh a rigid or silicone mould for that shape in
-            one action, and download every part as a zip with a fabrication
-            manifest. The silicone path is two castings: it also emits the master
-            pattern and the printed former the rubber itself is poured in.
+  Mould     generate a rigid or silicone mould for that shape, preview any part in
+            3D, and download the printable set as a zip with a fabrication manifest.
+            The silicone goal is two pours: print jacket A, jacket B and the master,
+            cast the rubber in them, then cast the mix in the rubber.
   Process   the feasible window as a map — where the castability floor and drying
             ceiling cross, and what cure or sieve opens it.
-  Explore   randomised search inside the current process settings, ranked.
+  Explore   search for the shape most likely to cement, and push it to the sliders.
 
 Everything numeric comes from `biocast.gui.engine`, which calls the validated
 package. The GUI holds no physics of its own.
@@ -706,123 +706,57 @@ def tab_explore(typology, mix, proc, jam_ratio):
 #: result announces itself instead of being read as the current one — the sliders
 #: above it keep moving after the solve, and a mould that no longer matches them is
 #: the single most misleading thing this tab could show.
-def _mould_settings(typology, kind, geom_kw, mix, proc, skin_t, deflect) -> dict:
+def _mould_settings(typology, kind, geom_kw, mix, proc, skin_t, wall) -> dict:
     return {"typology": typology, "kind": kind, "geom": dict(geom_kw),
             "mix": dict(mix), "proc": dict(proc),
-            "skin_t": float(skin_t), "deflect": float(deflect)}
-
-
-#: The two-stage chain, stated as a procedure rather than left to be inferred from a
-#: list of part names. Someone opening a zip of eight STLs cannot tell that three of
-#: them exist only to manufacture a fourth.
-PROCEDURE_MD = """\
-**The silicone path is two castings, not one.** You print a former, cast the rubber
-mould in it, and cast the bio-concrete in the rubber.
-
-1. **Print** `pattern` — a solid positive of the body you designed. This is a
-   sacrificial master, not a part of the mould.
-2. **Print** `pour_shell_lower` + `pour_shell_upper`, seat the pattern inside on the
-   window pillars, clamp shut on the tongue-and-groove rim, and pour
-   **{silicone_mass_g:.0f} g** of silicone in through the spout. The pillars hold the
-   pattern at the {skin_t_mm:.0f} mm skin offset *and* form the breather windows, so
-   the skin demoulds already perforated. — *{pour_procedure}*
-3. **Demould the skin.** That cured rubber is the mould the bio-concrete is cast in.
-4. **Print** `jacket_lower` + `jacket_upper` and clamp the skin inside them — silicone
-   at ~1.1 MPa cannot hold a section against mix pressure. Keep the jacket's windows
-   over the skin's: a window with jacket behind it is not a window.
-5. **Cast the mix**, cure open-faced, then take the jacket off the skin *first* and
-   peel the skin off the cast. The reverse tears the skin.
-"""
-
-#: Per-part one-liners. Keyed on the part name so a part that gains a role but no
-#: explanation shows an empty note rather than a wrong one.
-PART_NOTE = {
-    "pattern": "the sacrificial master — print it, pour silicone around it, discard",
-    "pour_shell_lower": "the former you pour silicone into (lower half)",
-    "pour_shell_upper": "the former you pour silicone into (upper half)",
-    "parting_plate": "the wall between the two skin halves; lift it out over the "
-                     "pattern before opening the lower half",
-    "jacket_lower": "carries mix pressure; draft lives here, not on the cast",
-    "jacket_upper": "carries mix pressure; draft lives here, not on the cast",
-    "skin": "THE MOULD — cast this in rubber, do not print it",
-    "skin_lower": "THE MOULD, lower half — cast this in rubber, do not print it",
-    "skin_upper": "THE MOULD, upper half — cast this in rubber, do not print it",
-    "skin_core_lining": "rubber lining of the hollow core; squeezed out through the "
-                        "cast's aperture, not peeled",
-    "core": "rigid backing behind the core lining",
-    "lower": "mould half; cure it open-faced",
-    "upper": "mould half; cure it open-faced",
-    "core_lo": "loose core, withdrawn from the lower half",
-    "core_up": "loose core, withdrawn from the upper half",
-}
+            "skin_t": float(skin_t), "wall": float(wall)}
 
 
 def tab_mould(typology, mix, proc, jam_ratio):
-    """Generate a printable mould for the current design and show its verification.
+    """Generate a printable mould for the current design and show what it decided.
 
-    Two mould types, and the choice is a transport decision before it is a
-    fabrication one — which is why the aeration comparison is shown before the
-    part list rather than buried under it.
+    Two goals, and the choice is a transport decision before it is a fabrication
+    one — which is why aeration is stated before the part list rather than under it.
     """
     st.subheader("Mould generation")
     st.caption(
-        "Everything is derived from the design's own field: parting plane from the "
-        "measured re-entrant volume, mould wall from the plate deflection target, "
-        "flange from what it must house, cores from the kinematic release condition. "
-        "Nothing is hand-tuned per typology.")
+        "Mesh CSG on the design's own geometry: the parting axis is the one that "
+        "undercuts least, the tooling is the part's silhouette grown by a wall, and "
+        "the breather pitch is stepped down until the body meets the aeration "
+        "criterion. Nothing is hand-tuned per typology, and it returns in seconds.")
 
-    c1, c2, c3 = st.columns([1.1, 1, 1])
+    c1, c2, c3 = st.columns([1.2, 1, 1])
     with c1:
         kind = st.radio(
-            "Mould type", ["rigid", "silicone"], horizontal=True,
-            format_func=lambda s: {"rigid": "Rigid (printed FDM)",
-                                   "silicone": "Silicone skin + jacket"}[s],
-            help="A silicone skin releases by stretching, so the cast object needs "
-                 "no draft relief. It does NOT breathe — see the aeration panel.")
+            "Goal", ["silicone", "rigid"], horizontal=True,
+            format_func=lambda s: {"silicone": "Silicone mould (2 pours)",
+                                   "rigid": "Rigid split negative"}[s],
+            help="Silicone releases by stretching, so the cast needs no draft and "
+                 "undercuts stop mattering. It does NOT breathe — the windows do.")
     with c2:
-        deflect = st.slider("Wall deflection target (mm)", 0.02, 0.30, 0.10, 0.01,
-                            help="A mould that bulges casts an out-of-tolerance "
-                                 "section, and section is what the drying and "
-                                 "oxygen models are most sensitive to.")
-    with c3:
-        skin_t = st.slider("Silicone skin (mm)", 3.0, 12.0, 6.0, 0.5,
+        skin_t = st.slider("Silicone thickness (mm)", 3.0, 12.0, 6.0, 0.5,
                            disabled=(kind != "silicone"),
-                           help="Thicker is more durable but a worse vapour "
-                                "barrier, and silicone is the cost driver.")
+                           help="The rubber wall around the master. Thicker is more "
+                                "durable and a worse vapour barrier, and silicone is "
+                                "the cost driver.")
+    with c3:
+        wall = st.slider("Tooling wall (mm)", 2.0, 15.0, 6.0, 0.5,
+                         help="Printed wall around the pour. It carries a static "
+                              "rubber head, not a tamped mix.")
 
-    st.caption(
-        "A mould solve is heavier than a design score. Measured on two cores (what a "
-        "basic hosted container gives you): **rigid ~15 s, silicone ~2-3 min**, "
-        "because the silicone path runs an oxygen field solve per boundary condition "
-        "and again per candidate window pitch. It is faster on a workstation. Meshing "
-        "every part adds ~10-30 s and runs in the same click, so the STL download is "
-        "ready as soon as the numbers are.")
-
-    # Fall back to the grammar defaults rather than another typology's parameters:
-    # geom_controls only runs when the Design tab renders, and passing a shell's
-    # `wall` to a tile would either raise or silently build the wrong body.
     geom_kw = (st.session_state.get("geom_kw", {})
                if st.session_state.get("geom_kw_typology") == typology else {})
 
-    # WHY THE RESULT IS STORED RATHER THAN RENDERED INLINE.
-    #
-    # Streamlit re-runs the entire script on every widget interaction, and a button
-    # reads True only on the run that follows its own click. The previous version
-    # guarded this whole tab with `if not st.button("Generate"): return`, so the FIRST
-    # thing a user did after generating — clicking "Prepare printable STLs", or the
-    # download button itself — re-ran the script with the generate button False and
-    # returned before reaching any of it. The tab emptied and no STL could ever be
-    # obtained. Everything below therefore renders from `st.session_state`, and the
-    # button only writes to it.
-    want = _mould_settings(typology, kind, geom_kw, mix, proc, skin_t, deflect)
+    # Held in session_state, not rendered inline: Streamlit re-runs the whole script
+    # on every widget interaction and a button reads True only on the run after its
+    # own click, so a tab guarded by `if not st.button(...)` empties the moment you
+    # touch anything in it — including its own download button.
+    want = _mould_settings(typology, kind, geom_kw, mix, proc, skin_t, wall)
     if st.button(f"Generate {kind} mould", type="primary"):
-        if not geom_kw:
-            st.info("Using the grammar's default parameters — open the **Design** tab "
-                    "first to mould the shape you have dialled in.")
         box = st.empty()
-        with st.spinner("Generating, verifying and meshing every part…"):
+        with st.spinner("Generating…"):
             rec = E.mould_record(typology, geom_kw, mix, proc, kind=kind,
-                                 skin_t=skin_t, deflect_target_mm=deflect,
+                                 skin_t=skin_t, wall=wall,
                                  progress=lambda m: box.caption(m))
         box.empty()
         rec["settings"] = want
@@ -830,201 +764,87 @@ def tab_mould(typology, mix, proc, jam_ratio):
 
     rec = st.session_state.get("mould_record")
     if rec is None:
-        st.info("Nothing is computed until you press **Generate** — a mould solve is "
-                "too heavy to run on every slider move.")
+        st.info("Press **Generate**. It takes a few seconds.")
         return
     if rec["settings"] != want:
         st.warning(
             f"Showing the **{rec['settings']['kind']} {rec['settings']['typology']}** "
-            f"mould generated earlier. The settings above have changed since — press "
-            f"**Generate {kind} mould** to rebuild for the current ones. The download "
-            f"below is still the older mould.")
+            f"mould generated earlier — the settings above have changed since. Press "
+            f"**Generate {kind} mould** to rebuild.")
     kind, typology = rec["kind"], rec["typology"]
     s = rec["summary"]
-    if s["pitch_coarsened"]:
-        st.info(
-            f"Generated at **{s['pitch_mm']:.2f} mm voxel pitch** — {s['pitch_reason']}. "
-            "The silicone path holds several dozen full-grid arrays plus the oxygen "
-            "solve, and the grammar pitch exceeds the memory a hosted container has. "
-            "Coverage is nearly pitch-independent here (the tile reads 0.885 at 2.0 mm "
-            "against 0.879 at 3.0 mm), but read window diameter and skin thickness as "
-            "resolved to about this pitch. For final STLs regenerate locally at the "
-            "grammar pitch with `examples/regenerate_moulds.py`.")
 
     # ---- aeration first: it decides whether the mould can cement at all -----
     st.markdown("#### Will it cement in the mould?")
     if kind == "silicone":
         st.warning(
-            f"**A silicone face is a no-flux boundary, not a breathable one.** The "
-            f"{s['skin_t_mm']:.0f} mm skin carries "
-            f"**{s['R_skin_over_R_drained_wall']:.0f}x** the oxygen resistance of the "
-            f"drained pore network behind it, and passes "
-            f"{s['wvtr_frac_of_free_evap']*100:.2f} % of the free evaporation rate — "
-            f"which collapses the drained depth to "
-            f"{s['L_dry_behind_skin_mm']:.2f} mm. Against *saturated* pores the same "
-            f"skin is transparent (ratio {s['R_skin_over_R_saturated_wall']:.4f}), "
-            f"which is why the permeability intuition misleads: PDMS beats water and "
-            f"loses to air. Silicone buys undercut tolerance and zero-draft release.")
-        a = pd.DataFrame([
-            {"boundary condition": "fully enclosed skin", "open area": 0.0,
-             "cemented fraction": s["cemented_frac_enclosed"]},
-            {"boundary condition": f"windowed ({s['window_spacing_mm']:.0f} mm pitch)",
-             "open area": s["open_area_frac"],
-             "cemented fraction": s["cemented_frac_windowed"]},
-            {"boundary condition": "rigid split mould, parting face open",
-             "open area": None,
-             "cemented fraction": s["cemented_frac_rigid_baseline"]},
-        ])
-        st.dataframe(a, hide_index=True, width="stretch",
-                     column_config={
-                         "open area": st.column_config.NumberColumn(format="%.3f"),
-                         "cemented fraction": st.column_config.NumberColumn(
-                             format="%.3f")})
-        if s["meets_coverage"]:
-            st.success(
-                f"Windowed skin reaches {s['cemented_frac_windowed']:.3f} at "
-                f"{s['open_area_frac']*100:.1f} % open area, clearing the 0.85 "
-                f"criterion. Read it as *at* the criterion, not comfortably above: "
-                f"the oxygen demand term alone spans a factor of ~26.")
-        else:
-            st.error(
-                f"Windowed skin reaches only {s['cemented_frac_windowed']:.3f}, below "
-                f"the 0.85 criterion, and the limit is **{s['coverage_limited_by']}**. "
-                f"More open area will not fix a drying limit — change the cure "
-                f"(lower RH is the strongest lever) or cast open-faced.")
+            "**A silicone face is a no-flux boundary, not a breathable one.** An "
+            "enclosing skin cements *nothing* — not merely poorly, but anoxic by "
+            "construction. The breather windows are the only thing that aerates the "
+            "cast, which is why their pitch is solved rather than chosen. Silicone "
+            "buys zero-draft release and undercut tolerance, not transport.")
     else:
-        a = rec["aeration"]
-        st.dataframe(pd.DataFrame([
-            {"boundary condition": "demoulded body (reference)",
-             "cemented fraction": a["demoulded"]["cemented_fraction"]},
-            {"boundary condition": "closed rigid mould (all faces sealed)",
-             "cemented fraction": a["enclosed"]["cemented_fraction"]},
-            {"boundary condition": "split mould, parting face open",
-             "cemented fraction": a["open_faces_only"]["cemented_fraction"]},
-        ]), hide_index=True, width="stretch",
-            column_config={"cemented fraction":
-                           st.column_config.NumberColumn(format="%.3f")})
-        st.caption(
-            f"A rigid mould face is no-flux too. Curing the halves **open-faced** is "
-            f"what makes the difference — assembling them early converts the parting "
-            f"face from an oxygen source into a sealed interface and reproduces the "
-            f"source paper's solid-cast failure. Drained depth L_dry = "
-            f"{a['L_dry_mm']:.1f} mm at "
-            f"{rec['settings']['proc']['cure_days']:.0f} d / "
-            f"{rec['settings']['proc']['rh_pct']:.0f} % RH — the cure this mould was "
-            f"generated for. These are drained-depth values, not the field solve.")
+        st.info(
+            "**A rigid mould face is no-flux too.** Curing the halves open-faced is "
+            "what makes the difference — assembling them early turns the parting "
+            "face from an oxygen source into a sealed interface and reproduces the "
+            "source paper's solid-cast failure.")
+    a1, a2, a3 = st.columns(3)
+    a1.metric("Cemented fraction", f"{s['cover_surrogate']:.3f}",
+              help="Drained-depth surrogate on the chosen window pattern, not the "
+                   "full field solve — it is what the pitch ladder can afford to "
+                   "evaluate per candidate, and it chose the pitch rather than "
+                   "grading the result.")
+    a2.metric("Breather windows",
+              f"{s['window_d_mm']:.0f} mm @ {s['window_spacing_mm']:.0f} mm",
+              help=f"{s['open_area_frac']*100:.1f} % open area, formed by "
+                   f"{s['n_pillars']} pillars in the tooling")
+    a3.metric("Drained depth L_dry", f"{s['L_dry_mm']:.1f} mm",
+              help="How far evaporation drains in this cure. Oxygen only travels "
+                   "usefully through pores it has already emptied.")
+    if s["meets_coverage"]:
+        st.success(f"Meets the 0.85 criterion. Read it as *at* the criterion rather "
+                   f"than comfortably past it — the oxygen demand term alone spans a "
+                   f"factor of ~26 across the literature.")
+    else:
+        st.error(f"**{s['cover_surrogate']:.3f}, below the 0.85 criterion.** "
+                 f"{s['coverage_limited_by']}")
 
-    # ---- decisions and verification ----------------------------------------
+    # ---- what it decided ---------------------------------------------------
     st.markdown("#### What the generator decided")
     d1, d2, d3, d4 = st.columns(4)
-    d1.metric("Parting plane", f"{s['parting_coord_mm']:.1f} mm",
-              help=s.get("parting_reason", ""))
-    d2.metric("Mould wall", f"{s['mould_wall_mm']:.0f} mm" if kind == "rigid"
-              else f"{s['jacket_wall_mm']:.0f} mm (jacket)")
-    if kind == "rigid":
-        d3.metric("Draft", f"{s['draft_requested_deg']:.2f}°",
-                  help=f"relief {s['relief_per_face_mm']:.2f} mm per face")
-        d4.metric("Cores", s["core_strategy"].replace("_", " "),
-                  help=s["core_reason"])
-    else:
-        d3.metric("Silicone", f"{s['silicone_mass_g']:.0f} g",
-                  help=f"{s['silicone_volume_mm3']/1000:.0f} cm3 at the spec density")
-        d4.metric("Web returned", f"{s['web_returned_mm']:.1f} mm",
-                  help="section the zero-draft skin gives back to the designer; "
-                       "useful only if it stays inside the drying ceiling")
+    d1.metric("Parting", f"axis {s['parting_axis']} @ {s['parting_coord_mm']:.0f} mm",
+              help=s["parting_reason"])
+    d2.metric("Undercut", f"{s['undercut']:.3f}",
+              help="Lateral protrusion past the parting plane, normalised by the "
+                   "largest section. Lower is a cleaner pull; this axis won.")
+    d3.metric("Plastic", f"{s['plastic_cm3']:.0f} cm³")
+    d4.metric("Silicone", f"{s['silicone_mass_g']:.0f} g" if kind == "silicone"
+              else "—", help="at the spec density")
 
-    checks = [("volume balance closes", s["balance_exact"],
-               f"unattributed {s['unattributed_mm3']:.1f} mm3"),
-              ("aperture classes pass", s["apertures_pass"],
-               "aggregate >= 6 x d_max, drains <= 3 x d_max")]
-    if kind == "silicone":
-        checks += [("release order (jacket first)", s["release_order_ok"],
-                    "and the control does interfere: "
-                    f"{s['release_control_interferes']}"),
-                   ("undercut strain within allowable", s["undercuts_ok"],
-                    f"worst {s['worst_undercut_strain_pct']:.1f} % vs "
-                    f"{s['allowable_strain_pct']:.1f} % allowable"),
-                   ("jacket stiff enough perforated", s["jacket_adequate"], ""),
-                   ("former: spout and vent reach every cavity",
-                    s["pour_shell_reaches_cavity"],
-                    f"measured intersection per cavity body, and no material taken "
-                    f"from the far half — spout {s['spout_d_mm']:.0f} mm, vent "
-                    f"{s['vent_d_mm']:.0f} mm"),
-                   ("former: casts the skin that was SCORED",
-                    s["cavity_matches_skin"]["ok"],
-                    f"cavity {s['cavity_matches_skin']['cavity_outer_mm3']/1000:.0f} "
-                    f"vs windowed skin "
-                    f"{s['cavity_matches_skin']['skin_out_mm3']/1000:.0f} cm3 "
-                    f"(ratio {s['cavity_matches_skin']['ratio']:.3f})"),
-                   ("former: window pillars bridge wall to pattern",
-                    s["pillars"]["ok"],
-                    f"{s['pillars']['formed_vol_frac']*100:.0f} % of bore volume "
-                    f"forms a pillar ({s['pillars']['n']} of "
-                    f"{s['pillars']['n_raw']} bodies); halves in "
-                    f"{s['pillars']['bodies_lower']}/{s['pillars']['bodies_upper']} "
-                    f"pieces"),
-                   ("former: both halves open off the cured skin",
-                    s["pour_shell_release_ok"],
-                    "straight-pull sweep against the as-cast skin, and the control "
-                    "against an unperforated one does interfere: "
-                    f"{s['pour_shell_control_interferes']}"),
-                   ("former: wall meets the deflection target",
-                    s["pour_shell_wall_ok"],
-                    f"{s['pour_shell_wall_mm']:.0f} mm, "
-                    f"{s['pour_shell_deflection_mm']:.3f} mm under the silicone head"),
-                   ("former: volume balance closes", s["pour_shell_balance_exact"],
-                    "")]
-    else:
-        checks += [("mould wall meets deflection target", s["wall_meets_target"],
-                    f"{s['wall_deflection_mm']:.3f} mm at the design pressure"),
-                   ("keys mate one way only", s["keys_chiral"],
-                    "tested against the flange's measured symmetry group")]
-    st.dataframe(pd.DataFrame([{"check": c, "pass": bool(p), "detail": n}
-                               for c, p, n in checks]),
+    st.dataframe(pd.DataFrame([{"check": c["check"], "pass": bool(c["pass"]),
+                                "detail": c.get("detail", "")}
+                               for c in s["checks"]]),
                  hide_index=True, width="stretch")
 
+    # ---- parts, preview, download ------------------------------------------
     st.markdown("#### Parts and downloads")
     if not rec["manufacturable"]:
-        st.error(
-            "**This former has not passed its own manufacturability checks**, so the "
-            "files below describe an assembly the generator has measured as unbuildable"
-            ":\n\n" + "\n".join(f"- {b}" for b in rec["blockers"]) +
-            "\n\nThe download is still offered — the parts are real geometry and you "
-            "may want them anyway — but printing the pattern, the former and the "
-            "jacket is many hours and several hundred grams of filament.")
-    if kind == "silicone":
-        st.markdown(PROCEDURE_MD.format(**s))
-        pil = s["pillars"]
-        if pil["open_area_formed_frac"] < 0.98:
-            st.warning(
-                f"**The former casts {pil['open_area_formed_frac']*100:.0f} % of the "
-                f"designed window area.** Only bores running along the draw can be "
-                f"formed — a peg across the pull shears through the cured rubber when "
-                f"the halves open — so the transverse windows, and the fill gate, have "
-                f"to be punched by hand to `skin*.stl`. **The cemented fraction above "
-                f"was solved on the full window set**, so treat it as the figure for a "
-                f"skin whose remaining windows have been punched, not for one straight "
-                f"out of the former."
-                + (" The hollow core's lining is cast unperforated for the same "
-                   "reason — a pillar inside the silhouette has no former wall to "
-                   "attach to — and its windows are hand-punched too."
-                   if s["cavity_matches_skin"]["core_lining_windows_unformed"] else ""))
+        st.error("**This mould did not pass its own checks:**\n\n"
+                 + "\n".join(f"- {b}" for b in rec["blockers"]))
+    st.markdown("**How it is made**")
+    st.markdown("\n".join(f"{i}. {step}"
+                          for i, step in enumerate(s["procedure"], start=1)))
     st.dataframe(pd.DataFrame(
-        [{"part": p["part"],
-          "you": "3D print" if p["role"] == "print" else "cast in silicone",
-          "note": PART_NOTE.get(p["part"],
-                                "the flexible part — do NOT print this"
-                                if p["role"] == "cast_silicone" else "")}
-         for p in rec["parts"]]),
+        [{"part": p["part"], "you": "3D print",
+          "note": E.PART_NOTE.get(p["part"], "")} for p in rec["parts"]]),
         hide_index=True, width="stretch")
 
-    # ---- 3D preview, read back out of the archive --------------------------
     st.markdown("##### Look at a part")
     man = rec["manifest"]
     pick = st.selectbox(
-        "Part", range(len(man)), key=f"mould_preview_{rec['kind']}_{rec['typology']}",
+        "Part", range(len(man)), key=f"mould_preview_{kind}_{typology}",
         format_func=lambda i: (
-            f"{'🖨' if man[i]['role'] == 'print' else '🩹'} "
             f"{man[i]['file'].split('/')[-1]}  ·  {man[i]['volume_cm3']:.0f} cm³  ·  "
             f"{'×'.join(f'{v:.0f}' for v in man[i]['bbox_mm'])} mm"),
         help="Loaded from the zip below, so what you see is the file you get.")
@@ -1032,17 +852,13 @@ def tab_mould(typology, mix, proc, jam_ratio):
     with st.spinner("Loading the part…"):
         mesh = E.bundled_mesh(rec["zip"], m["file"])
     p = V.stl_viewer(mesh)
-    note = (PART_NOTE.get(m["part"], "") or
-            ("3D print this" if m["role"] == "print" else "cast this in silicone"))
     st.caption(
-        f"**{m['part']}** — {note}. Drag to orbit, scroll to zoom; **Section** cuts "
-        f"the part on a plane, which is how to read a wall thickness or check that a "
-        f"cavity closed."
+        f"**{m['part']}** — {E.PART_NOTE.get(m['part'], '')}. Drag to orbit, scroll "
+        f"to zoom; **Section** cuts the part on a plane, which is how to read a wall "
+        f"thickness or check that a cavity closed."
         + (f" Simplified to {p['nFaces']:,} of {p['nFacesFull']:,} triangles for "
            f"display; the download is full resolution."
-           if p["nFacesFull"] > p["nFaces"] else "")
-        + ("" if m["watertight"] else
-           "  ⚠️ This part reads as **not watertight**, so its volume is unreliable."))
+           if p["nFacesFull"] > p["nFaces"] else ""))
 
     c1, c2 = st.columns(2)
     with c1:
@@ -1051,24 +867,21 @@ def tab_mould(typology, mix, proc, jam_ratio):
             f"({len(rec['zip'])/1e6:.1f} MB zip)", rec["zip"],
             file_name=rec["zip_name"], mime="application/zip", type="primary",
             width="stretch", on_click="ignore")
-        st.caption(
-            f"**{rec['n_print']} files to print** in `{E.ROLE_DIR['print']}/`"
-            + (f", **{rec['n_cast']} to cast in silicone** in "
-               f"`{E.ROLE_DIR['cast_silicone']}/`" if rec["n_cast"] else "")
-            + ". MANIFEST.txt carries the fabrication order, the open-faced cure "
-              "requirement and the disassembly order.")
+        st.caption("MANIFEST.txt carries the pour order, the open-faced cure "
+                   "requirement and every check on this page.")
     with c2:
-        st.download_button("Decisions + verification (JSON)",
+        st.download_button("Decisions + checks (JSON)",
                            lambda: json.dumps(s, indent=1, default=str),
                            file_name=rec["zip_name"].replace(".zip", ".json"),
                            mime="application/json", width="stretch",
                            on_click="ignore")
-        st.caption(
-            "Every number on this page, at full precision. The whole set for all "
-            "three typologies is `PYTHONPATH=. python examples/regenerate_moulds.py`.")
+        st.caption("Every number here, at full precision.")
     st.dataframe(pd.DataFrame(rec["manifest"])[
-        ["file", "role", "volume_cm3", "watertight", "bbox_mm"]],
+        ["file", "volume_cm3", "bodies", "watertight", "bbox_mm"]],
         hide_index=True, width="stretch")
+
+
+
 
 
 def main():

@@ -118,13 +118,14 @@ jobs:
           res = E.generate_mould("tile", {}, {"d_max": 4.0},
                                  {"cure_days": 21.0, "rh_pct": 85.0},
                                  kind="rigid", pitch=2.4)
-          s = res["summary"]
-          assert s["balance_exact"], f"volume balance not exact: {s['unattributed_mm3']} mm3"
+          bad = [c for c in res["summary"]["checks"] if not c["pass"]]
+          assert not bad, f"mould failed its own checks: {bad}"
           blob, man = E.mould_stl_bundle(res, prefix="ci_tile")
           assert man, "bundle emitted no parts"
           for m in man:
               assert m["volume_cm3"] > 0, f"{m['file']} meshed empty"
               assert m["watertight"], f"{m['file']} is not watertight"
+              assert m["bodies"] == 1, f"{m['file']} is {m['bodies']} pieces"
           print(f"ok: {len(man)} parts, {len(blob)/1e6:.1f} MB zip")
           PY
 

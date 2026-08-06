@@ -1,3 +1,25 @@
+> **SUPERSEDED — the code this describes has been deleted.**
+>
+> `mould_auto.py` and `mould_silicone.py` were replaced by `biocast/mould_cast.py`,
+> which builds moulds with mesh CSG instead of voxel booleans. See
+> [`mould_cast_notes.md`](mould_cast_notes.md) for the current generator.
+>
+> **What still holds and is still load-bearing:** everything about TRANSPORT. §10
+> (a silicone face is a no-flux boundary, ~294x the resistance of the drained pore
+> network), §11 (an enclosed skin cements 0.000, so windows must be sized on the
+> aeration requirement), §15 (mould faces are no-flux, so only genuinely open area
+> is atmosphere), and §4-5 (which limit binds on each typology). The new generator
+> carries all of it.
+>
+> **What no longer applies:** the geometry. Voxel parting analysis, the plate-
+> deflection wall solve, cone-swept cavities, volume-balance partitions, release
+> sweeps, the pour shell and its window pillars, and §18's six defects — those parts
+> no longer exist. The record is kept because the FINDINGS in it were expensive and
+> several are about how a check can pass on geometry nobody can build, which is why
+> the geometry was replaced.
+
+---
+
 # Automatic mould generation — design record and verification
 
 Two automatic paths share one measurement core: a **rigid** printed negative
