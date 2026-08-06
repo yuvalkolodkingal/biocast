@@ -6,21 +6,29 @@ needed 6-24 M voxels per solve, a few dozen full-grid arrays, minutes of runtime
 it kept producing parts that verified beautifully and could not be opened — the
 vessel's former failed its own release sweep to the end.
 
-The geometry here comes from `auto-mold-generator`, rebuilt in Python on
-trimesh + manifold booleans. Two ideas from it do the real work:
+The geometry comes from two prior generators, rebuilt in Python on trimesh +
+manifold booleans. Three ideas do the real work:
 
-**XY silhouette offset, not a bounding box and not a 3D offset.** The jacket is the
-part's shadow, grown by a constant amount and extruded vertically. The gap between
-core and jacket is then a true wall thickness everywhere, the tooling hugs the part
-instead of boxing it, and — measured on the vessel — that is 686 cm3 of plastic
-against 2090 for an axis-aligned box, a factor of 3.
+**A fused core, so there is nothing to get stuck** (`auto-mold-generator`). The part
+stands in the middle of the tooling on a bottom flange; silicone fills the gap around
+it. The elastomer is what demoulds, and it demoulds by stretching, which is the one
+thing it is good at. The voxel path's whole release apparatus — sweeps,
+discrimination controls, trapped-core detection — answers a question this geometry
+does not ask.
 
-**A fused core, so there is nothing to get stuck.** The part itself stands in the
-middle of the tooling on a bottom flange; silicone fills the gap around it. The
-elastomer is what demoulds, and it demoulds by stretching, which is the one thing it
-is good at. The voxel path's whole release apparatus — sweeps, discrimination
-controls, trapped-core detection — exists to answer a question this geometry does not
-ask.
+**A box for the plastic, a hugging silhouette for the rubber.** The jacket and the
+rigid block are axis-aligned boxes, as in `automated_3d_mold_generator`; the silicone
+chamber is the part's own shadow offset by the skin thickness. Splitting it that way
+is deliberate. A box face is two triangles where an offset silhouette must be
+triangulated and comes out as a fan of long slivers from a single vertex — 628 cap
+triangles on the vessel against 12 — and those slivers are what made the earlier
+output look stretched and chewed. Buying the clean version in RUBBER would be
+expensive; buying it in filament costs 1.02x on the tile, 1.18x on the vessel,
+1.66x on the block, and the silicone bill does not move.
+
+**Split by boolean, never by `slice_plane`.** Its cap is a fan from one vertex, so a
+120 mm parting face came out as a star of enormous slivers. Intersecting with a
+half-space box re-triangulates the cut properly.
 
 WHAT IS KEPT FROM THE VOXEL PATH, because the geometry is not the point of this
 project. A silicone face is a no-flux boundary: an enclosing skin scores **0.000**
@@ -124,6 +132,28 @@ def silhouette(mesh: trimesh.Trimesh, z: float | None = None,
         if u.geom_type == "MultiPolygon":
             u = max(u.geoms, key=lambda g: g.area)
     return u
+
+
+def block(part: trimesh.Trimesh, offset: float, z0: float,
+          z1: float) -> trimesh.Trimesh:
+    """An axis-aligned box around the part, which is what a mould normally looks like.
+
+    Used for the PLASTIC, while the rubber still hugs the part's silhouette. That
+    split is the whole point: a box's faces are two triangles each, where an offset
+    silhouette has to be triangulated and comes out as a fan of long slivers from a
+    single vertex — measured, 628 cap triangles on the vessel against 12, and those
+    slivers are what made every part look stretched and chewed. Paying for the clean
+    version in RUBBER would be expensive; paying for it in filament is 1.02x on the
+    tile, 1.18x on the vessel and 1.66x on the block.
+
+    This is how `automated_3d_mold_generator` builds its mould, and it is the right
+    call for the same reason.
+    """
+    lo, hi = part.bounds[0] - offset, part.bounds[1] + offset
+    lo[2], hi[2] = z0, z1
+    return trimesh.creation.box(
+        extents=hi - lo,
+        transform=trimesh.transformations.translation_matrix((lo + hi) / 2))
 
 
 def prism(poly: Polygon, offset: float, z0: float, z1: float) -> trimesh.Trimesh:
@@ -251,12 +281,34 @@ def apply_draft(mesh: trimesh.Trimesh, axis: int, plane: float,
 
 
 def bisect(solid: trimesh.Trimesh, axis: int, plane: float) -> tuple:
-    """Cut a solid in two at `plane`, as capped (still watertight) halves."""
-    n = np.zeros(3)
-    n[axis] = 1.0
-    lo = solid.slice_plane(plane_origin=n * plane, plane_normal=-n, cap=True)
-    hi = solid.slice_plane(plane_origin=n * plane, plane_normal=n, cap=True)
-    return lo, hi
+    """Cut a solid in two at `plane`, by INTERSECTING WITH A HALF-SPACE BOX.
+
+    Not `slice_plane(cap=True)`, which was the single worst thing in the output.
+    Its cap is a fan triangulation from one vertex, so a 120 mm parting face came
+    out as a star of enormous slivers radiating from a point — that is the "stretched
+    out" look, it is present on every part that gets split, and a slicer has to chew
+    through degenerate triangles to print it. `automated_3d_mold_generator` splits by
+    booleaning against boxes for the same reason; a boolean re-triangulates the cut
+    face properly instead of fanning it.
+
+    The box is oversized by the solid's own diagonal so it cannot clip anything but
+    the intended side, whatever the part's extent.
+    """
+    lo_b, hi_b = solid.bounds
+    pad = float(np.linalg.norm(hi_b - lo_b))
+    out = []
+    for sign in (-1, +1):
+        lo = lo_b - pad
+        hi = hi_b + pad
+        if sign < 0:
+            hi[axis] = plane
+        else:
+            lo[axis] = plane
+        box = trimesh.creation.box(
+            extents=hi - lo,
+            transform=trimesh.transformations.translation_matrix((lo + hi) / 2))
+        out.append(trimesh.boolean.intersection([solid, box]))
+    return out[0], out[1]
 
 
 # --------------------------------------------------------------------------
@@ -479,7 +531,7 @@ def build_silicone_tooling(part: trimesh.Trimesh, spec: CastSpec,
     # it. Without one the upper half is an open ring: its pillars have nothing above
     # them to hang from and come off as loose rod — measured, 37 separate bodies in
     # one jacket half. A floor anchors the lower pillars; a lid anchors the upper.
-    outer = prism(shadow, st + wall, z_lo - flange_h - floor, z_hi + st + wall)
+    outer = block(part, st + wall, z_lo - flange_h - floor, z_hi + st + wall)
 
     # Pillars bridge the gap on the window grid: they form the skin's breather
     # windows and hold the core at the silicone offset while the rubber is liquid.
@@ -533,8 +585,8 @@ def build_rigid_mould(part: trimesh.Trimesh, spec: CastSpec,
     plane = parting["plane"]
     z_lo, z_hi = float(part.bounds[0][2]), float(part.bounds[1][2])
     shadow = silhouette(part)
-    block = prism(shadow, wall, z_lo - floor, z_hi + wall)
-    cavity = trimesh.boolean.difference([block, part])
+    blk = block(part, wall, z_lo - floor, z_hi + wall)
+    cavity = trimesh.boolean.difference([blk, part])
     lo, hi = bisect(cavity, 2, plane)
     pegs, sockets = frustum_keys(shadow, plane, 0.0, wall, spec)
     if pegs is not None:

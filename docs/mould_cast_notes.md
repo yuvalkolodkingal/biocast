@@ -22,9 +22,9 @@ Measured at `d_max = 4 mm`, 28 d / 90 % RH, on the baseline designs
 | window Ø / pitch | 10 / 28 mm | 10 / 24 mm | 10 / 34 mm |
 | cover surrogate | 0.906 | 0.897 | 0.921 |
 | pillars formed | 9 | 80 | 36 |
-| plastic, silicone goal | 1304 cm³ | 11571 cm³ | 2694 cm³ |
-| silicone | 906 g | 3907 g | 591 g |
-| plastic, rigid goal | 884 cm³ | 3919 cm³ | 759 cm³ |
+| plastic, silicone goal | 1413 cm³ | 15842 cm³ | 2715 cm³ |
+| silicone | 1170 g | 4140 g | 589 g |
+| plastic, rigid goal | 1410 cm³ | 10384 cm³ | 767 cm³ |
 | every part 1 body, watertight | ✓ | ✓ | ✓ |
 | coverage meets 0.85 | ✓ | ✓ | ✓ |
 
@@ -48,10 +48,17 @@ tooling**. The geometry here does not ask it.
 
 Both come from `auto-mold-generator`, rebuilt here on trimesh + manifold booleans.
 
-**XY silhouette offset — not a bounding box, not a 3D offset.** The tooling is the
-part's shadow grown by a constant and extruded vertically. The gap between core and
-jacket is then a true wall thickness everywhere. Measured on the vessel: **686 cm³
-against 2090 for an axis-aligned box**, a factor of 3.
+**A box for the plastic, a hugging silhouette for the rubber.** The jacket and the
+rigid block are axis-aligned boxes, as in
+[`automated_3d_mold_generator`](https://github.com/Lion4re/automated_3d_mold_generator);
+the silicone chamber is the part's own shadow offset by the skin thickness.
+
+That split is deliberate and it is what fixed the appearance. A box face is two
+triangles, where an offset silhouette has to be triangulated and comes out as a fan of
+long slivers from a single vertex — **628 cap triangles on the vessel against 12**.
+Those slivers were the "stretched out" look. Buying the clean version in RUBBER would
+be expensive; buying it in filament costs 1.02x on the tile, 1.18x on the vessel and
+1.66x on the block, and the silicone bill does not move at all.
 
 **A fused core, so nothing can get stuck.** The part stands in the middle of the
 tooling on a bottom flange and the silicone fills the gap around it. The elastomer
@@ -107,6 +114,19 @@ Measured as 2–3 disconnected bodies per half before the fix. Three keys at
 **The jacket has a lid as well as a floor.** Without one the upper half is an open
 ring: its pillars have nothing to hang from and come off as loose rod — measured, 37
 separate bodies in one jacket half. The pour goes through a spout in the lid.
+
+**Splitting is a boolean, never `slice_plane`.** Its cap is a fan triangulation from
+a single vertex, so a 120 mm parting face came out as a star of enormous slivers —
+visible on every split part, and degenerate triangles a slicer then has to chew
+through. Intersecting with an oversized half-space box re-triangulates the cut face
+properly, which is how `automated_3d_mold_generator` does it too.
+
+**Subdivision in `apply_draft` is capped.** It exists so a long flat face gains
+vertices to taper around, and on the tile it fired four times and turned 56 k
+triangles into 224 k — the 11 MB STLs. Capped at 4x the input or 120 k faces.
+
+**Keys are frusta, not cones.** A sharp apex prints badly, locates nothing once the
+tip rounds over, and reads as a spike in every render.
 
 **Pillars run along the draw only.** In the *skin* a bore is a cut and any direction
 works; the tooling has to **form** it with a solid pillar, and a pillar across the
