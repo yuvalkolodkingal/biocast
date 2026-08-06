@@ -138,6 +138,27 @@ jobs:
         # the Space already exists, so publishing stays a deliberate manual act.
         run: PYTHONPATH=. python deploy/push_space.py --repo "$HF_SPACE_ID"
 
+      - name: How to fix a rejected token
+        # `invalid_grant: No trusted publisher configured ... matching this OIDC
+        # token` is the one failure whose cause is entirely off this machine, so the
+        # log has to carry the values to type. Claims are matched EXACTLY, and the two
+        # that catch people are `workflow` (the FILENAME, not the workflow's `name:`)
+        # and configuring the publisher on the account's CI/CD Access page instead of
+        # on the Space — an account publisher only ever mints a READ-ONLY token, so it
+        # can never satisfy a `spaces/...` resource.
+        if: failure()
+        run: |
+          cat <<EOF
+          ::error::If the step above said 'invalid_grant: No trusted publisher configured',
+          add one at https://huggingface.co/spaces/${HF_SPACE_ID}/settings -> Trusted Publishers
+            Provider   : GitHub Actions
+            repository : ${GITHUB_REPOSITORY}
+            branch     : ${GITHUB_REF_NAME}
+            workflow   : $(basename "${GITHUB_WORKFLOW_REF%%@*}")
+          It must be on the SPACE's settings page, not your account's CI/CD Access page
+          (that one mints a read-only token and cannot write to a Space).
+          EOF
+
       - name: Wait for the Space to build
         # Without this the job goes green while the Space sits in BUILD_ERROR — the
         # upload succeeding says nothing about whether the container starts.
