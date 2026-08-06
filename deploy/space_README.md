@@ -25,14 +25,24 @@ Synthetic Biology, Reichman University).
 - **Design** — move sliders, see the meshed body in 3D with a sectioning plane, the
   four subscores, every constraint verdict, and download the STL.
 - **Mould** — generate a printable mould for the shape you have dialled in, either a
-  rigid split negative or a silicone skin with a rigid jacket, and download the
-  printable STLs as a zip with a fabrication manifest. Nothing is hand-tuned per
-  shape: the parting plane comes from the measured re-entrant volume, the mould wall
-  from a plate-deflection target, the flange from what it must house, and integral
-  boss versus loose core from the kinematic release condition.
+  rigid split negative or a silicone skin with a rigid jacket, and download every
+  part as one zip, filed into `1_print_these/` and `2_cast_these_in_silicone/` with
+  a fabrication manifest. Nothing is hand-tuned per shape: the parting plane comes
+  from the measured re-entrant volume, the mould wall from a plate-deflection
+  target, the flange from what it must house, and integral boss versus loose core
+  from the kinematic release condition.
+  The silicone path is **two castings**: it also generates the master pattern and the
+  printed former that the rubber itself is poured in, so the chain closes — print the
+  pattern and the former, pour the skin, print the jacket, cast the mix in the skin.
+  The former's window pillars do double duty, holding the pattern at the skin offset
+  and casting the breather windows into the skin.
 - **Process window** — the castability floor against the drying ceiling, and what cure
   or sieve opens the window when they cross.
-- **Explore** — randomised search inside the current mix and cure settings, ranked.
+- **Explore** — finds the shape most likely to cement: samples the design space to
+  locate a promising basin, then runs a compass search inside it, ranking on the 5th
+  percentile of the score rather than the median so a wide interval cannot flatter a
+  design. One click pushes the winner into the Design sliders, and the Mould tab then
+  builds the pattern, the former and the jacket for it.
 
 **A mould face does not breathe.** Both paths treat rigid and silicone mould faces as
 no-flux, so only genuinely open area acts as atmosphere. Silicone is highly

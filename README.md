@@ -120,6 +120,69 @@ print(r["dominant_failure_mode"], r["failed_rules"])
 `engine.evaluate()` is the single entry point: it meshes, diagnoses, measures the true
 narrowest section, scores, and runs every constraint rule.
 
+### Searching for the best shape
+
+```python
+from biocast.gui.app import GEOM_SPACE, GEOM_CHOICES, derive_geom
+
+rows = E.search_shapes("shell", GEOM_SPACE["shell"], GEOM_CHOICES["shell"],
+                       derive_geom, dict(d_max=4.0), dict(cure_days=21, rh_pct=85),
+                       n_random=24, n_refine=2)
+best = rows[0]        # ranked on score_lo, the 5th percentile, not the median
+```
+
+Random sampling to find a basin, then a compass search inside it. Ranking on the lower
+bound rather than the median matters here: the intervals are wide and driven mostly by
+an assumed biofilm volume fraction, so ranking on the median promotes whichever design
+happens to have the widest interval.
+
+### Generating a mould
+
+```python
+rec = E.mould_record("shell", {}, dict(d_max=4.0),
+                     dict(cure_days=21, rh_pct=85), kind="silicone")
+open("mould.zip", "wb").write(rec["zip"])         # every part, filed by role
+print(rec["summary"]["pillars"], rec["summary"]["cavity_matches_skin"])
+```
+
+One call solves, verifies, meshes and bundles, and returns plain data — no voxel grids
+— so the result is cheap to hold and the archive always exists alongside the numbers
+that describe it.
+
+---
+
+## Deployment
+
+The design studio ships as a container (`Dockerfile`, port 7860) and deploys to a
+Hugging Face Space. Pushing to `main` deploys automatically via
+[`.github/workflows/deploy-space.yml`](.github/workflows/deploy-space.yml), which smoke-tests
+the engine and the mould bundler before uploading and then waits for the Space to
+reach `RUNNING` rather than going green on a successful upload.
+
+**There is no token to store.** The job authenticates with
+[Trusted Publishers](https://huggingface.co/docs/hub/en/trusted-publishers): GitHub
+mints an OIDC id token, `huggingface_hub` exchanges it for a Hub token scoped to that
+one Space and valid for an hour. Configure once:
+
+1. On the Hub, `https://huggingface.co/spaces/<owner>/<name>/settings` →
+   **Trusted Publishers** → add a **GitHub Actions** publisher. Claims are matched
+   exactly: `repository = yuvalkolodkingal/biocast`, `branch = main`,
+   `workflow = deploy-space.yml`.
+2. On GitHub, **Settings → Secrets and variables → Actions → Variables** → add
+   `HF_SPACE_ID`, e.g. `megapandavip/biocast-studio`. It is a variable rather than a
+   secret because a Space id is not a credential, and as a secret GitHub would mask
+   it out of the build-log URL the workflow prints when a deploy fails.
+
+To deploy by hand instead:
+
+```bash
+python deploy/push_space.py --repo <user>/<space> --dry-run
+```
+
+The upload is one atomic commit that adds, replaces the Space card and deletes files
+no longer in the repository — `upload_folder` alone only ever adds, which leaves a
+renamed module on the Space beside its replacement where Python will happily import it.
+
 ---
 
 ## Repository layout
@@ -129,7 +192,10 @@ biocast/
   params.py           parameter schema (ShellParams / BlockParams / TileParams, Mix, Process)
   constraints.py      machine-checkable rule set, each rule tagged TEAM / LIT / STD / GEOM
   score.py            composite estimator with Monte Carlo uncertainty
-  mould.py            split-mould negative generation
+  mould.py            split-mould negative generation (hand-tuned typologies)
+  mould_auto.py       rigid printed mould for any grammar, every literal measured
+  mould_silicone.py   silicone skin + rigid jacket, breather lattice, and the
+                      printed former + master pattern the skin itself is cast in
   grammars/
     sdf.py            signed-distance primitives and rounded CSG
     shell.py          hollow ovoid vessel — the proven typology
@@ -160,6 +226,7 @@ stl/                  representative meshes (large ones are regenerated, see bel
 | [docs/gui_guide.md](docs/gui_guide.md) | running the design studio and reading its output honestly |
 | [docs/grasshopper_spec.md](docs/grasshopper_spec.md) | rebuilding in Rhino/Grasshopper, including what has no equivalent there |
 | [docs/mould_notes.md](docs/mould_notes.md) | parting planes, draft, registration keys, vent sizing, print settings |
+| [docs/mould_auto_notes.md](docs/mould_auto_notes.md) | automatic mould generation, both paths: what is measured rather than tuned, why a silicone face does not breathe, and the six defects that made the printed former unbuildable (§18) |
 | [docs/design_space_summary.md](docs/design_space_summary.md) | the 6912-cell sweep: what was feasible and why the rest failed |
 | [docs/micp_kinetics_summary.md](docs/micp_kinetics_summary.md) | oxygen transport and kinetics literature |
 | [docs/mechanics_summary.md](docs/mechanics_summary.md) | strength, jamming, and standards literature |

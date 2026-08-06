@@ -15,3 +15,6 @@ stl/moulds_auto/
 out/
 # transient matplotlib view dumps
 _view_*.png
+
+# Claude Code local settings and launch config
+.claude/

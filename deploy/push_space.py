@@ -3,6 +3,12 @@
     hf auth login                       # device flow, once — token stays in ~/.cache/huggingface
     python deploy/push_space.py --repo <user-or-org>/biocast-studio
 
+Under CI there is no login and no stored token: `.github/workflows/deploy-space.yml`
+sets `HF_OIDC_RESOURCE`, and `huggingface_hub` exchanges GitHub's OIDC id token for a
+Space-scoped one (Trusted Publishers). This script needs no flag for that — the
+exchange happens inside `get_token()` — but it must not assume a personal token, which
+is why `whoami` is best-effort and `create_repo` only runs when the Space is absent.
+
 Why a script and not `hf upload`: two details need doing every time and are easy to get
 wrong by hand.
 
@@ -22,7 +28,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from huggingface_hub import HfApi
+from huggingface_hub import CommitOperationAdd, CommitOperationDelete, HfApi
 from huggingface_hub.utils import filter_repo_objects
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -41,6 +47,10 @@ IGNORE = [
     "stl/*", "docs/*", "examples/*", "deploy/*", "out/*",
     "*.egg-info/*", ".ipynb_checkpoints/*",
     "README.md",                      # replaced by deploy/space_README.md
+    # Sweep outputs, read only by examples/ and the docs — both already excluded.
+    # 5.4 MB of the 6.0 MB that would otherwise ship, on every deploy, into the
+    # Docker build context of a container that never opens them.
+    "data/design_space.csv", "data/pareto_front.csv",
 ]
 
 
@@ -73,19 +83,58 @@ def main() -> None:
         return
 
     api = HfApi()
-    print(f"authenticated as {api.whoami()['name']}")
 
-    url = api.create_repo(repo_id=args.repo, repo_type="space", space_sdk="docker",
-                          private=not args.public, exist_ok=True)
-    print(f"space: {url}")
+    # BOTH OF THESE HAVE TO TOLERATE A TRUSTED-PUBLISHER TOKEN.
+    #
+    # Under CI there is no personal token: `HF_OIDC_RESOURCE` makes `get_token()`
+    # exchange GitHub's OIDC id token for one scoped to this Space alone, attributed
+    # to a synthetic `[OIDC]` user. So `whoami()` is decoration, not a check — it can
+    # legitimately fail — and `create_repo` is a namespace-level write the scoped
+    # token cannot do. Neither should be able to fail a deploy of a Space that
+    # already exists, which under CI it always does.
+    try:
+        print(f"authenticated as {api.whoami()['name']}")
+    except Exception as exc:                   # OIDC token, or none at all
+        print(f"authenticated via a scoped token (whoami unavailable: {exc})")
 
-    api.upload_folder(folder_path=str(ROOT), repo_id=args.repo, repo_type="space",
-                      ignore_patterns=IGNORE,
+    if api.repo_exists(repo_id=args.repo, repo_type="space"):
+        print(f"space: https://huggingface.co/spaces/{args.repo}")
+    else:
+        url = api.create_repo(repo_id=args.repo, repo_type="space",
+                              space_sdk="docker", private=not args.public)
+        print(f"space: {url} (created {'public' if args.public else 'private'})")
+
+    # ONE commit, not two, and it deletes.
+    #
+    # `upload_folder` + a second `upload_file` for the card is two revisions, so the
+    # Hub queues two builds seconds apart and there is a window in which the Space
+    # runs new code under the old card. It also matters under CI: a wait-for-build
+    # gate can watch the first build reach RUNNING and report success while the
+    # second is still queued, so a failing deploy goes green.
+    #
+    # `upload_folder` also only ever ADDS. Rename a module and the old one stays on
+    # the Space beside the new one, where Python imports it perfectly happily — a
+    # stale driver that keeps serving after the source has moved on, with nothing in
+    # the build log to say so. Deletions are computed against the same `upload_set()`
+    # that --dry-run prints, so the two cannot disagree.
+    ops = [CommitOperationAdd(path_in_repo=p, path_or_fileobj=str(ROOT / p))
+           for p in upload_set()]
+    ops.append(CommitOperationAdd(
+        path_in_repo="README.md",
+        path_or_fileobj=str(ROOT / "deploy" / "space_README.md")))
+    # `.gitattributes` is Hub-generated LFS config that does not exist in this
+    # repository; deleting it would strip the Space's LFS tracking.
+    keep = {op.path_in_repo for op in ops} | {".gitattributes"}
+    stale = [p for p in api.list_repo_files(args.repo, repo_type="space")
+             if p not in keep]
+    ops += [CommitOperationDelete(path_in_repo=p) for p in stale]
+
+    api.create_commit(repo_id=args.repo, repo_type="space", operations=ops,
                       commit_message="deploy design studio")
-    api.upload_file(path_or_fileobj=str(ROOT / "deploy" / "space_README.md"),
-                    path_in_repo="README.md", repo_id=args.repo, repo_type="space",
-                    commit_message="space card")
-    print(f"pushed. build logs: https://huggingface.co/spaces/{args.repo}?logs=build")
+    print(f"pushed {len(ops) - len(stale)} files"
+          + (f", removed {len(stale)}: {', '.join(sorted(stale)[:6])}"
+             + ("…" if len(stale) > 6 else "") if stale else ""))
+    print(f"build logs: https://huggingface.co/spaces/{args.repo}?logs=build")
 
 
 if __name__ == "__main__":

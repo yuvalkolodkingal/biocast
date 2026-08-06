@@ -447,16 +447,42 @@ def generate_mould(typology: str, geom_kw: dict, mix_kw: dict, proc_kw: dict, *,
             "unattributed_mm3": res["balance"].get("unattributed_mm3",
                                                    res["balance"].get("residual_void_mm3")),
             "balance_exact": res["balance"]["exact"],
-            "parts": [k for k in res["_parts"]
-                      if k not in ("below", "obj", "form", "envelope",
-                                   "control_undrafted", "outer_body")],
+            # NOT the keys of `_parts`: that dict also carries the working sets the
+            # driver needs (`windows`, `cavity`, `vent`, `gate`, `form`, `envelope`)
+            # and an exclusion list has to be kept in step with it by hand. It was
+            # not — the table listed `windows` and `gate` as parts to print while
+            # omitting the pour shell, which is the one thing a caster must print
+            # first. Read off the bundler instead, so the table cannot disagree with
+            # the zip it describes.
+            "parts": None,      # filled below, once `pour_shell` is on `res`
             "apertures_pass": res["apertures"]["all_passed"],
             "apertures": res["apertures"]["apertures"],
             "pour_shell_pourable": res["pour_apertures"]["pourable"],
+            "spout_d_mm": res["pour_apertures"]["spout_d_mm"],
+            "vent_d_mm": res["pour_apertures"]["vent_d_mm"],
+            "pour_shell_reaches_cavity": res["pour_shell"]["reach"]["ok"],
+            "pour_shell_wall_mm": res["pour_shell"]["wall_mm"],
+            "pour_shell_rim_mm": res["pour_shell"]["rim_mm"],
+            "pour_shell_plastic_cm3": res["pour_shell"]["plastic_cm3"],
+            "pour_shell_orphan_mm3": res["pour_shell"]["orphan_shell_mm3"],
+            "pattern_plastic_cm3": res["pour_shell"]["pattern_cm3"],
+            "pour_shell_wall_ok": res["pour_shell"]["wall"]["meets_target"],
+            "pour_shell_deflection_mm": res["pour_shell"]["wall"]["deflection_mm"],
+            "pour_shell_balance_exact": res["pour_shell"]["balance"]["exact"],
+            "pour_shell_release_ok": res["pour_shell"]["release"]["ok"],
+            "pour_shell_control_interferes":
+                res["pour_shell"]["release"]["control_interferes"],
+            "pour_cavity_cm3": res["pour_shell"]["cavity_mm3"] / 1000.0,
+            "cavity_matches_skin": res["pour_shell"]["cavity_matches_skin"],
+            "skin_parted_by_former": res["pour_shell"]["skin_parted_by_former"],
+            "pour_procedure": res["pour_shell"]["procedure"],
+            "pillars": res["pour_shell"]["pillars"],
         }
     else:
         raise ValueError(f"kind must be 'rigid' or 'silicone', got {kind!r}")
 
+    res["summary"] = summary          # `_bundle_parts` dispatches on summary["kind"]
+    summary["parts"] = list(_bundle_parts(res))
     summary["pitch_mm"] = res["pitch"]
     summary["pitch_coarsened"] = pchoice["coarsened"]
     summary["pitch_reason"] = pchoice["reason"]
@@ -491,25 +517,38 @@ PART_ROLE = {
     # silicone path
     "jacket_lower": "print", "jacket_upper": "print",
     "pour_shell_lower": "print", "pour_shell_upper": "print",
+    "pattern": "print", "parting_plate": "print",
     "skin": "cast_silicone", "skin_lower": "cast_silicone",
     "skin_upper": "cast_silicone", "skin_core_lining": "cast_silicone",
     "core": "print",
 }
 
 
-def mould_stl_bundle(res: dict, *, prefix: str, roles=("print",)) -> tuple:
+#: Directory each role is written to inside the zip. The folder IS the instruction:
+#: a flat archive of eight STLs gives a printer no way to tell that two of them are a
+#: former for casting a third, and printing the skin is a silent failure — the rigid
+#: copy fits the jacket perfectly and releases nothing.
+ROLE_DIR = {"print": "1_print_these", "cast_silicone": "2_cast_these_in_silicone"}
+
+#: Smallest connected component worth writing as its own STL. Below this a "piece" is
+#: debris a boolean shed, not a part: a 2 mm speck is unprintable, unfindable in a
+#: slicer, and dilutes the file list the fabrication manifest depends on.
+MIN_PRINTABLE_MM3 = 200.0
+
+
+def mould_stl_bundle(res: dict, *, prefix: str, roles=("print", "cast_silicone")) -> tuple:
     """Mesh the requested parts and return `(zip_bytes, manifest)`.
 
-    Meshing happens here rather than at generation time because it is the expensive
-    step and most sessions only want the numbers. Parts are voxel occupancy grids —
-    only `obj_mesh` is a Trimesh — so each goes through `mould.occ_to_mesh`;
-    iterating the dict for objects with `.export` writes the cast object and
-    silently nothing else.
+    Parts are voxel occupancy grids — only `obj_mesh` is a Trimesh — so each goes
+    through `mould.occ_to_mesh`; iterating the dict for objects with `.export` writes
+    the cast object and silently nothing else.
 
-    `roles` selects by `PART_ROLE`, so the default hands back exactly the parts a
-    printer should see. A genuinely multi-piece part (the block's two cavity
-    linings) is written one file per connected component: `occ_to_mesh` keeps the
-    largest body, so meshing their union would silently ship one of the two.
+    `roles` selects by `PART_ROLE`, and the selected parts are filed into one
+    directory per role (`ROLE_DIR`) rather than dumped flat, because the printed and
+    the cast families are not interchangeable and the archive is the only thing that
+    travels to whoever fabricates it. A genuinely multi-piece part (the block's two
+    cavity linings) is written one file per connected component: `occ_to_mesh` keeps
+    the largest body, so meshing their union would silently ship one of the two.
     """
     import io
     import zipfile
@@ -517,30 +556,142 @@ def mould_stl_bundle(res: dict, *, prefix: str, roles=("print",)) -> tuple:
     from .. import mould
 
     parts, pitch, origin = _bundle_parts(res), res["pitch"], res["origin"]
-    manifest, buf = [], io.BytesIO()
+    manifest, debris, buf = [], [], io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
         for name, occ in parts.items():
             role = PART_ROLE.get(name, "print")
             if role not in roles or occ is None or not occ.any():
                 continue
             lab, nlab = _ndi.label(occ)
-            pieces = ([(occ, "")] if nlab == 1 else
-                      [(lab == i, f"_{j}") for j, i in enumerate(
-                          sorted(range(1, nlab + 1),
-                                 key=lambda i: -np.bincount(lab.ravel())[i]),
-                          start=1)])
+            # `np.bincount(lab.ravel())` inside the sort key recomputes a full
+            # histogram of a multi-million-voxel array per comparison; hoisted.
+            sizes = np.bincount(lab.ravel()) if nlab > 1 else None
+            if nlab == 1:
+                pieces, dropped = [(occ, "")], []
+            else:
+                order = sorted(range(1, nlab + 1), key=lambda i: -sizes[i])
+                # A part that is legitimately several pieces (the block's two cavity
+                # linings) must be written one file per piece. But a part that has
+                # SHED debris must not: a few stray voxels are not a component
+                # somebody prints, and writing them turned one former into 25 STLs,
+                # 24 of them under a cubic centimetre. The threshold is printability,
+                # and what falls below it is reported in the manifest rather than
+                # dropped quietly.
+                keep = [i for i in order
+                        if sizes[i] * pitch ** 3 >= MIN_PRINTABLE_MM3] or order[:1]
+                # one survivor IS the part, so it keeps the bare name — a lone
+                # `_1` suffix would suggest a second file that does not exist
+                pieces = ([(lab == keep[0], "")] if len(keep) == 1 else
+                          [(lab == i, f"_{j}") for j, i in enumerate(keep, start=1)])
+                dropped = [i for i in order if i not in keep]
+                if dropped:
+                    debris.append((name, len(dropped),
+                                   float(sum(sizes[i] for i in dropped) * pitch ** 3)))
             for sub, suffix in pieces:
                 m = mould.occ_to_mesh(sub, origin, pitch)
-                fn = f"{prefix}_{name}{suffix}.stl"
+                fn = f"{ROLE_DIR.get(role, role)}/{prefix}_{name}{suffix}.stl"
                 z.writestr(fn, m.export(file_type="stl"))
                 manifest.append({
-                    "file": fn, "role": role,
+                    "file": fn, "role": role, "part": name,
                     "volume_cm3": round(float(m.volume) / 1000.0, 1),
                     "watertight": bool(m.is_watertight),
                     "bbox_mm": [round(float(v), 1) for v in m.extents],
                 })
-        z.writestr("MANIFEST.txt", _bundle_readme(res, manifest, prefix))
+        z.writestr("MANIFEST.txt", _bundle_readme(res, manifest, prefix, debris))
     return buf.getvalue(), manifest
+
+
+def jsonable(o):
+    """Strip numpy scalars and arrays so a summary survives json.dumps and, more
+    importantly, so nothing that reaches `mould_record`'s return still holds a
+    reference to a full voxel grid."""
+    if isinstance(o, dict):
+        return {k: jsonable(v) for k, v in o.items()}
+    if isinstance(o, (list, tuple)):
+        return [jsonable(v) for v in o]
+    if isinstance(o, np.generic):
+        return o.item()
+    if isinstance(o, np.ndarray):
+        return f"<array shape={o.shape}>"
+    return o
+
+
+def mould_record(typology: str, geom_kw: dict, mix_kw: dict, proc_kw: dict, *,
+                 kind: str = "rigid", skin_t: float = 6.0,
+                 deflect_target_mm: float = 0.10,
+                 progress=None) -> dict:
+    """Generate, verify, mesh and bundle in ONE call, returning only plain data.
+
+    Two problems this solves, both of which made the STL download unreachable in the
+    GUI rather than merely slow.
+
+    1. **Meshing cannot be deferred behind a second button in Streamlit.** Every
+       widget interaction re-runs the whole script, so a "Prepare STLs" button in a
+       tab whose body is guarded by `if st.button("Generate")` runs on a pass where
+       the generate button reads False — and the tab, results and all, is gone before
+       the mesher is reached. Doing both in one action is what makes the download
+       exist at all. It costs ~10 s on top of a 15 s rigid solve and is lost in the
+       noise of a 2-3 minute silicone one.
+    2. **The driver's return cannot be kept across re-runs.** `res` holds a few dozen
+       full voxel grids — 75-200 MB for a silicone solve — and parking that in
+       `st.session_state` multiplies it by the number of open sessions. Everything
+       the interface renders is derived here and the grids are dropped on return.
+
+    Returns: summary (json-able), the rigid path's boundary-condition comparison,
+    the zip bytes, the manifest, and the parts/roles table.
+    """
+    if progress:
+        progress(f"solving the {kind} mould…")
+    res = generate_mould(typology, geom_kw, mix_kw, proc_kw, kind=kind,
+                         skin_t=skin_t, deflect_target_mm=deflect_target_mm)
+    s = res["summary"]
+
+    aeration = None
+    if kind == "rigid":
+        if progress:
+            progress("comparing boundary conditions…")
+        aeration = mould_aeration(proc_kw, mould_res=res)
+
+    if progress:
+        progress("meshing every part — marching cubes, the expensive step…")
+    prefix = f"{kind}_{typology}"
+    blob, manifest = mould_stl_bundle(res, prefix=prefix)
+
+    parts = [{"part": p, "role": PART_ROLE.get(p, "print")} for p in s["parts"]]
+
+    # One flag over the former's own checks. Printing a full-size master pattern, a
+    # 12 mm-walled former and a jacket is many hours and several hundred grams of
+    # filament, and a failing row ninth in a nine-row table above a primary-styled
+    # download button is not a warning anybody reads. The archive is still offered —
+    # the parts are real and a caster may want them anyway — but the reason travels
+    # with it.
+    blockers = []
+    if kind == "silicone":
+        for ok, why in (
+                (s["pour_shell_release_ok"],
+                 "the former's halves do not open off the cured skin"),
+                (s["pillars"]["ok"],
+                 "the window pillars do not bridge the former wall to the pattern"),
+                (s["pour_shell_reaches_cavity"],
+                 "the spout or vent does not reach every cavity the pour has to fill"),
+                (s["cavity_matches_skin"]["ok"],
+                 "the former would cast a skin that is not the one the aeration "
+                 "solve scored"),
+                (s["pour_shell_balance_exact"],
+                 "the former's volume balance does not close")):
+            if not ok:
+                blockers.append(why)
+    return {
+        "kind": kind, "typology": typology,
+        "summary": jsonable(s),
+        "aeration": jsonable(aeration),
+        "zip": blob, "manifest": manifest, "parts": parts,
+        "manufacturable": not blockers, "blockers": blockers,
+        "zip_name": f"mould_{prefix}.zip",
+        "n_files": len(manifest),
+        "n_print": sum(1 for m in manifest if m["role"] == "print"),
+        "n_cast": sum(1 for m in manifest if m["role"] == "cast_silicone"),
+    }
 
 
 def _bundle_parts(res: dict) -> dict:
@@ -548,9 +699,11 @@ def _bundle_parts(res: dict) -> dict:
     if res["summary"]["kind"] == "rigid":
         return {n: res[n] for n in res["part_names"]}
     p = res["_parts"]
-    out = {"jacket_lower": p["jacket_lower"], "jacket_upper": p["jacket_upper"],
+    out = {"pattern": p["obj"],
            "pour_shell_lower": res["pour_shell"]["lower"],
-           "pour_shell_upper": res["pour_shell"]["upper"]}
+           "pour_shell_upper": res["pour_shell"]["upper"],
+           "parting_plate": res["pour_shell"]["parting_plate"],
+           "jacket_lower": p["jacket_lower"], "jacket_upper": p["jacket_upper"]}
     # The skin is split exactly when the one-piece hoop stretch exceeds the
     # allowable — the same decision `mould_silicone.export` makes, read off the
     # record rather than re-derived, so a bundle cannot disagree with the STL set.
@@ -564,10 +717,13 @@ def _bundle_parts(res: dict) -> dict:
         out["skin_core_lining"] = p["skin_core"]
     if p["core"].any():
         out["core"] = p["core"]
-    return out
+    # An empty set is not a part. The bundler already skips it, so leaving it here
+    # would put a row in the on-screen parts table and a line in the fabrication
+    # manifest for a file that is not in the zip.
+    return {k: v for k, v in out.items() if v is not None and v.any()}
 
 
-def _bundle_readme(res: dict, manifest: list, prefix: str) -> str:
+def _bundle_readme(res: dict, manifest: list, prefix: str, debris: list = ()) -> str:
     """Fabrication order in the archive, because the parts do not explain themselves.
 
     Someone opening a zip of eight STLs cannot tell that two of them are a former
@@ -590,18 +746,41 @@ def _bundle_readme(res: dict, manifest: list, prefix: str) -> str:
               "oxygen source into a sealed interface and reproduces the solid-cast",
               "failure this geometry exists to avoid."]
     else:
-        L += ["SILICONE MOULD. Two of these part families are PRINTED and one is",
-              "CAST IN SILICONE — printing the skin gives a rigid copy that fits the",
-              "jacket and releases nothing.", "",
-              "  1. PRINT  pour_shell_lower + pour_shell_upper",
-              "     The former. Clamp it shut and pour silicone into the cavity to",
-              "     make the skin. This is the mould for the mould.",
-              "  2. CAST   skin / skin_lower + skin_upper (+ skin_core_lining)",
-              f"     {s['silicone_mass_g']:.0f} g of rubber at "
-              f"{s['skin_t_mm']:.0f} mm nominal. Do not print these.",
-              "  3. PRINT  jacket_lower + jacket_upper",
+        pil = s["pillars"]
+        L += ["SILICONE MOULD. This is TWO CASTINGS, not one: you print a former,",
+              "cast the rubber mould in it, then cast the bio-concrete in the rubber.",
+              f"Files in {ROLE_DIR['print']}/ are printed. Files in",
+              f"{ROLE_DIR['cast_silicone']}/ are what comes OUT of the pour — they are",
+              "there for fit checking and rubber estimation. Printing the skin gives a",
+              "rigid copy that fits the jacket and releases nothing.", "",
+              "  1. PRINT  pattern",
+              "     A solid positive of the body. Sacrificial master, not part of the",
+              "     mould. Without it in the box the pour has no gap to fill and you",
+              "     get a solid rubber copy of the body instead of a mould.",
+              "  2. PRINT  pour_shell_lower + pour_shell_upper",
+              "     The former. Seat the pattern on the window pillars, clamp shut,",
+              f"     and pour {s['silicone_mass_g']:.0f} g of silicone in through the",
+              f"     {s['spout_d_mm']:.0f} mm spout; air leaves by the "
+              f"{s['vent_d_mm']:.0f} mm vent.",
+              f"     {pil['n']} pillars span the {s['skin_t_mm']:.0f} mm gap. They do",
+              "     two jobs: they hold the pattern at the skin offset, and they form",
+              "     the breather windows, so the skin demoulds already perforated.",
+              "     The pillar tips touch the pattern with no allowance, so print",
+              f"     tolerance lands directly on the {s['skin_t_mm']:.0f} mm skin.",
+              "  3. DEMOULD the skin. That cured rubber IS the mould.",
+              "     skin / skin_lower + skin_upper (+ skin_core_lining)",
+              "     PUNCH THE REMAINING WINDOWS. The former forms only the bores",
+              "     running along the draw — a peg across the pull shears through",
+              "     the rubber when the halves open — which is "
+              f"{pil['open_area_formed_frac']*100:.0f} % of the designed",
+              "     window area. Punch the rest, and the fill gate, to skin*.stl."
+              + ("" if not s["cavity_matches_skin"]["core_lining_windows_unformed"]
+                 else "\n     The hollow core's lining is cast solid for the same"
+                      "\n     reason; its windows are hand-punched too."),
+              "  4. PRINT  jacket_lower + jacket_upper",
               "     The rigid jacket that carries mix pressure — silicone at ~1.1 MPa",
-              "     cannot hold a section. Draft lives here, not on the cast body.", "",
+              "     cannot hold a section. Draft lives here, not on the cast body.",
+              "  5. CAST the mix in the skin, inside the jacket. Cure open-faced.", "",
               f"  breather windows  {s['window_d_mm']:.0f} mm at "
               f"{s['window_spacing_mm']:.0f} mm pitch, "
               f"{s['open_area_frac']*100:.1f} % open area", "",
@@ -615,10 +794,15 @@ def _bundle_readme(res: dict, manifest: list, prefix: str) -> str:
               f"Windowed: {s['cemented_frac_windowed']:.3f}.",
               "", "DISASSEMBLY ORDER: jacket off the skin first, then peel the skin",
               "off the cast. The reverse tears the skin."]
-    L += ["", "FILES", *[f"  {m['file']:44s} {m['role']:14s} "
+    L += ["", "FILES", *[f"  {m['file']:52s} {m['role']:14s} "
                          f"{m['volume_cm3']:9.1f} cm3  "
                          f"{'x'.join(f'{v:.0f}' for v in m['bbox_mm'])} mm"
                          for m in manifest]]
+    if debris:
+        L += ["", f"NOT WRITTEN — below the {MIN_PRINTABLE_MM3:.0f} mm3 printable "
+                  "floor, reported rather than dropped silently:",
+              *[f"  {n:24s} {k} fragment(s), {v:.1f} mm3 total"
+                for n, k, v in debris]]
     L += ["", "Not a structural sign-off. Nothing here has been cast; verification is",
           "geometric and transport-based. See docs/mould_auto_notes.md."]
     return "\n".join(L)
@@ -686,6 +870,162 @@ def mould_aeration(proc_kw: dict, *, mould_res: dict) -> dict:
                    "(depth <= L_dry), not the field solve; it is the cheap "
                    "comparison across boundary conditions")
     return out
+
+
+def rank_design(r: dict) -> tuple:
+    """Sort key for candidate designs, best last (use `reverse=True` to list best first).
+
+    Lexicographic and feasibility-first. A design that breaks a hard rule cannot be
+    cast at all, so no score should be able to buy its way past one that can — and on
+    score alone the ordering really does invert. See `search_shapes` for the measured
+    case: an 18 mm-walled vessel breaking two rules outranked a 27 mm one breaking one.
+    """
+    return (-int(r.get("n_fail", 0)), float(r.get("score_lo", 0.0)),
+            float(r.get("score", 0.0)))
+
+
+def search_shapes(typology: str, space: dict, choices: dict, derive,
+                  mix_kw: dict, proc_kw: dict, *, jam_ratio: float = JAM_RATIO_LIT,
+                  n_random: int = 24, n_refine: int = 2, seed: int = 0,
+                  n_mc: int = 150, start: dict | None = None,
+                  progress=None) -> list:
+    """Find the design most likely to cement, by sampling then refining.
+
+    Random search alone is a poor optimiser in eight dimensions, and it was what the
+    Explore tab did: 24 draws over a box that big lands nowhere near a peak, and
+    doubling the draws buys almost nothing. What it is good at is finding a BASIN,
+    because the scoring surface here is not smooth — `feasible` is a step, and the
+    dominant failure mode switches discontinuously as the section crosses the jamming
+    floor or the drying ceiling.
+
+    So: sample to find the basin, then walk downhill inside it. The refinement is a
+    COMPASS SEARCH — try each parameter up and down at the current step, accept the
+    first improvement, and halve the step only when a whole sweep fails to find one.
+    It needs no gradient (there isn't one to have) and cannot cross a feasibility
+    boundary blindly, because every trial point is scored by the same `evaluate` as
+    everything else.
+
+    HOW MUCH THE REFINEMENT ACTUALLY BUYS: on the evidence so far, nothing. Measured
+    across all three typologies at 24 samples and 2 levels, the refined design equalled
+    the best sampled one every time — the sampling finds the design and the compass
+    search only confirms it is a local optimum for single-parameter moves. Dropping the
+    first step from 25 % of each range to 10 % did not change that either. It is kept
+    because confirming a local optimum is worth something, and because it is the only
+    stage that can improve on a hand-tuned `start`; it is not kept because it has been
+    shown to find better designs. Spend the budget on samples first.
+
+    `start` is scored first and seeds the refinement if it beats every random draw, so
+    a search can never return something worse than the design already on the sliders.
+
+    RANKING IS LEXICOGRAPHIC: fewest broken hard rules first, then `score_lo`, then
+    the median. Feasibility has to lead, and ranking on score alone gets it backwards
+    in a way that is easy to miss. Measured on the vessel at d_max = 4 mm: an 18 mm
+    wall scores `score_lo` 0.207 while breaking TWO rules (the section and the aperture
+    are both under the 24 mm jamming floor); a 27 mm wall breaks only the aperture rule
+    and scores `score_lo` 0.000 with a median of 0.296. On score alone the search
+    parks on the 18 mm design and every refinement step is rejected — which is exactly
+    what it did, twice, gaining nothing across 52 evaluations. `-n_fail` gives it the
+    gradient it was missing: 2 broken rules to 1 to none.
+
+    The 5th percentile leads the tiebreak rather than the median because the intervals
+    here are wide and driven mostly by an assumed biofilm volume fraction, so ranking
+    on the median promotes whichever design happens to have the widest interval. It
+    collapses to 0.000 for plenty of sound designs, and the median then does the
+    discriminating — which is the honest outcome, not a workaround.
+
+    Returns every candidate scored, best first.
+    """
+    rng = np.random.default_rng(int(seed))
+    names = list(space)
+    rows, seen = [], set()
+
+    def _score(g):
+        key = tuple(round(float(g[k]), 4) if isinstance(g[k], (int, float)) else g[k]
+                    for k in sorted(g))
+        if key in seen:
+            return None
+        seen.add(key)
+        try:
+            r = evaluate(typology, derive(typology, g), mix_kw, proc_kw,
+                         jam_ratio=jam_ratio, n_mc=n_mc)
+        except Exception:
+            return None
+        row = {**g, "score": r["score"], "score_lo": r["score_lo"],
+               "score_hi": r["score_hi"], "feasible": r["feasible"],
+               "n_fail": r["n_fail"], "limiting": r["dominant_failure_mode"],
+               "section_mm": r["min_section_measured_mm"],
+               "volume_cm3": r["volume_mm3"] / 1000.0,
+               "cemented_fraction": r["cemented_fraction"],
+               "failed": ", ".join(r["failed_rules"])}
+        rows.append(row)
+        return row
+
+    all_names = names + list(choices)
+    budget = int(n_refine) * len(all_names) * 4     # ceiling, not a target
+    total = int(n_random) + budget + (1 if start else 0)
+    done = 0
+
+    def _tick():
+        nonlocal done
+        done += 1
+        if progress:
+            progress(min(done / max(total, 1), 1.0), done, total)
+
+    # Only if it covers every searched parameter: a partial start would be scored with
+    # dataclass defaults filling the gaps, and could then be picked as `best` — whose
+    # missing keys the refinement's `cur` would immediately fail on.
+    if start and all(k in start for k in all_names):
+        _score({k: start[k] for k in all_names})
+        _tick()
+    for _ in range(int(n_random)):
+        g = {k: float(rng.uniform(s["lo"], s["hi"])) for k, s in space.items()}
+        for k, opts in choices.items():
+            g[k] = opts[int(rng.integers(len(opts)))]
+        _score(g)
+        _tick()
+
+    if not rows:
+        return []
+    best = max(rows, key=rank_design)
+    cur = {k: best[k] for k in all_names}
+
+    # The first step is 10 % of each range, not 25 %. A quarter of the range is a leap,
+    # not a probe: 24 random draws already land somewhere reasonable, and from there
+    # every quarter-range move was rejected on all three typologies, so the whole
+    # budget went on shrinking rather than on improving.
+    used, frac, frac_min = 0, 0.10, 0.10 / (2 ** (int(n_refine) + 2))
+    while frac >= frac_min and used < budget:
+        improved = False
+        for k in choices:                     # discrete: enumerate, do not perturb
+            for opt in choices[k]:
+                if opt == cur[k] or used >= budget:
+                    continue
+                r = _score({**cur, k: opt})
+                used += 1
+                _tick()
+                if r and rank_design(r) > rank_design(best):
+                    best, cur = r, {kk: r[kk] for kk in all_names}
+                    improved = True
+        for k in names:
+            s = space[k]
+            step = frac * (s["hi"] - s["lo"])
+            for sign in (+1, -1):
+                if used >= budget:
+                    break
+                trial = dict(cur)
+                trial[k] = float(np.clip(cur[k] + sign * step, s["lo"], s["hi"]))
+                r = _score(trial)
+                used += 1
+                _tick()
+                if r and rank_design(r) > rank_design(best):
+                    best, cur = r, {kk: r[kk] for kk in all_names}
+                    improved = True
+                    break                     # move on; this direction paid off
+        if not improved:
+            frac /= 2.0                       # only shrink when a full sweep fails
+
+    rows.sort(key=rank_design, reverse=True)
+    return rows
 
 
 def feasible_window(d_max: float, cure_days: float, rh_pct: float,

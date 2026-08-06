@@ -161,6 +161,33 @@ class SiliconeSpec:
     spout_d: float = 14.0
     vent_d: float = 8.0
 
+    # THE FORMER GETS ITS OWN WALL RULE, and it is the single biggest lever on how
+    # much plastic this workflow costs. Two inherited constraints were governing it
+    # and neither one is about this part.
+    #
+    # `AutoSpec.wall_min = 12.0` is a floor for a MOULD carrying a tamped 1890 kg/m3
+    # mix. The former carries an untamped rubber head at 0.5-2.3 kPa, and the plate
+    # solve asks for 3.7 mm on the vessel — so the floor, not the physics, was setting
+    # the thickness, and it set it three times too high. The floor that does apply is
+    # printability: 3 mm is comfortably more than the 4-6 perimeters an FDM wall wants.
+    #
+    # `AutoSpec.deflect_target_mm = 0.10` exists because a mould that bulges casts an
+    # out-of-tolerance SECTION, and section is what the drying and oxygen models are
+    # most sensitive to. That argument does not transfer: the former's deflection lands
+    # on the skin's OUTER face, which mates with the jacket through 6 mm of rubber. The
+    # cast body's geometry is set by the pattern, which is rigid and does not care.
+    # Half a millimetre there is invisible in the cast, and t scales as the cube root
+    # of the target, so accepting 0.5 mm instead of 0.10 mm takes another 1.7x off.
+    #
+    # Together: vessel former 12.0 -> 3.0 mm wall, about a quarter of the filament.
+    pour_deflect_mm: float = 0.50
+    pour_wall_min: float = 3.0
+    # …but the parting land is thickened back up locally. A 3 mm rim cannot host a
+    # tongue and groove, and it is nothing to clamp on. Local thickening buys both for
+    # a few cm3 in a narrow band, where thickening the whole shell to suit would cost
+    # the saving above twice over.
+    pour_rim_min: float = 8.0
+
     release_steps: int = 120
 
 
@@ -1310,33 +1337,197 @@ def build_pour_shell(res: dict, spec: SiliconeSpec,
     it releases from is the cured SKIN and that stretches — the one place in this
     module where the flexible-part argument works in the mould's favour rather
     than the cast's.
+
+    TWO THINGS THE FORMER HAS TO DO THAT A HOLLOW BLOCK DOES NOT.
+
+    1. **Form the breather windows.** The skin is the only thing between the cast and
+       the atmosphere, and §11 of the design record puts the enclosed-skin cemented
+       fraction at exactly 0.000 — windows are not a refinement, they are the whole
+       reason the skin cements anything. But `windows` is a boolean cut applied to the
+       skin OCCUPANCY, and the earlier former was built from `outer`, which is the
+       un-windowed offset body. So it cast an unperforated skin: the geometry the
+       aeration solve reported and the geometry the former produced were different
+       objects, and the difference was the one that decides whether the design works.
+       The window bores are therefore carried into the former as PILLARS spanning the
+       gap, and the skin demoulds already perforated.
+
+    2. **Hold the pattern.** The gap only exists while the pattern sits at exactly
+       `skin_t` from the former's cavity wall, and nothing was holding it there — a
+       loose pattern floats or sinks in the mix and the skin comes out wedge-shaped on
+       one side and torn on the other. The pillars do this too, and they are the right
+       feature for it: they already run from the former's outer wall to the pattern's
+       surface, they are distributed over the whole body at the window pitch, and the
+       marks they leave are the windows the skin needs anyway. A dedicated set of
+       locating pins would leave a second set of holes to be patched.
+
+    Pillars are taken on the OUTER skin only (`~form`). A bore through the lining of a
+    hollow core would land inside the silhouette with no former material to attach to
+    — a floating pillar, which prints as loose debris and fragments the part.
     """
     p = res["_parts"]
     pitch, origin, axis = res["pitch"], res["origin"], res["axis"]
-    below = p["below"]
+    below, k_part = p["below"], res["k_part"]
     outer, obj, form = p["outer_body"], p["obj"], p["form"]
+    windows, gate = p["windows"], p["gate"]
+    one_piece = bool(res["hoop"]["one_piece_ok"])
     d_out = true_sdf(outer, pitch)
-    shellwall = max(8.0, 0.5 * res["jacket_wall_mm"])
-    envelope = d_out <= shellwall
-    block = envelope & ~outer
-    cavity = outer & ~obj                    # the gap the silicone fills
+    X, Y, Z = np.meshgrid(*[origin[i] + np.arange(outer.shape[i]) * pitch
+                            for i in range(3)], indexing="ij")
 
-    grid = [origin[i] + np.arange(outer.shape[i]) * pitch for i in range(3)]
-    X, Y, Z = np.meshgrid(*grid, indexing="ij")
+    # ---- wall SOLVED for the silicone head, not halved off the jacket's -----
+    #
+    # The old `max(8.0, 0.5 * jacket_wall)` was an unchecked literal inheriting a load
+    # case that is not this one: the jacket is sized for a tamped 1890 kg/m3 mix at a
+    # compaction factor of 10, and this part holds an untamped 1150 kg/m3 rubber head
+    # at static pressure — about a sixteenth of the design pressure. Halving a wall
+    # multiplies its deflection by eight, so the two errors happened to cancel on the
+    # three shipped typologies and the result was reported as a number rather than as
+    # a check. Worse, the GUI's deflection slider moved it the wrong way: raising the
+    # target thinned the jacket and thinned this with it, while the load stayed put.
+    #
+    # The floor and the tolerance are the former's own too — see `SiliconeSpec`. Both
+    # inherited values were about a mould carrying a tamped mix, and between them they
+    # were setting this wall at four times what it needs.
+    om = mould_auto.outline_metrics(
+        mould_auto.outline_at(outer, axis, k_part), pitch,
+        np.delete(np.asarray(origin, float), axis))
+    kk = np.flatnonzero(np.moveaxis(outer, axis, -1).any(axis=(0, 1)))
+    head_mm = float((kk.max() - kk.min() + 1) * pitch) if len(kk) else 0.0
+    wall = mould_auto.auto_wall(
+        2.0 * min(om["half_x"], om["half_y"]), head_mm,
+        replace(auto, rho_mix=spec.rho_g_cm3 * 1000.0, compaction_factor=1.0,
+                deflect_target_mm=spec.pour_deflect_mm,
+                wall_min=spec.pour_wall_min))
+    shellwall = wall["t_mm"]
+    rim_t = max(shellwall, spec.pour_rim_min)
+    rim_h = max(4.0, 3.0 * pitch)
+    n_rim = max(1, int(round(rim_h / pitch)))
+    sl_r = [slice(None)] * 3
+    sl_r[axis] = slice(max(0, k_part - n_rim), k_part + n_rim)
+    rim_zone = np.zeros(outer.shape, bool)
+    rim_zone[tuple(sl_r)] = True
+    envelope = (d_out <= shellwall) | ((d_out <= rim_t) & rim_zone)
+    # THE FORMER IS PURELY EXTERNAL — `~form` is what makes it openable at all.
+    #
+    # Without it, `envelope & ~outer` lines the INSIDE of a hollow body too: on the
+    # vessel that is a shellwall-thick plug sitting in the bore, connected to the rest
+    # of the former only through a 16 mm aperture that the cavity behind it is several
+    # times wider than. It is a classic trapped core — the release sweep flagged it and
+    # nothing else would have, because it prints, meshes watertight and balances
+    # exactly. It also cannot be dug out afterwards without destroying the skin.
+    #
+    # So the former shapes the outer skin and nothing else. The core lining is cast
+    # against the separately printed `core` part, which the silicone path already
+    # emits, and `core_lining_windows_unformed` continues to say that its windows are
+    # hand-punched. This is also the second-largest plastic saving in the part.
+    block_raw = envelope & ~outer & ~form
+    # Cutting a hollow body's interior away can in principle leave the bowl beside
+    # loose offcuts, so the bowl is taken as the one connected body and anything else
+    # is named in the balance rather than dropped quietly. On all three shipped
+    # typologies `orphan` measures 0 mm3 — this is a guard, not a fix, and the
+    # fragmentation actually observed on the vessel came from the tongue instead (see
+    # the tongue's own note). Kept because a silent extra body here would print as
+    # debris and would not show up in any mesh check.
+    _lab_b, _n_b = ndimage.label(block_raw, structure=ndimage.generate_binary_structure(3, 1))
+    if _n_b > 1:
+        _sz = np.bincount(_lab_b.ravel())
+        _sz[0] = 0
+        block = _lab_b == int(_sz.argmax())
+        orphan = block_raw & ~block
+    else:
+        block, orphan = block_raw, np.zeros_like(block_raw)
+    gap = outer & ~obj & ~form               # the OUTER skin, which is all it forms
+
+    # ---- window pillars, on the OUTER skin, DRAW-AXIS FAMILY ONLY -----------
+    #
+    # `window_lattice` emits three axis-aligned bore families and the skin keeps all
+    # three, because on the skin and the jacket a bore is a CUT. In the former it is
+    # solid material, and a peg running across the draw cannot come out of the hole it
+    # made: opening the halves shears it through the cured rubber. Measured with all
+    # three families carried into the former, ~80 % of the vessel's pillar volume ran
+    # transverse and `pour_release` interfered on both halves at step one — the
+    # tool's own check catching a former that would have been printed, poured, cured
+    # for a day and then found to be welded shut.
+    #
+    # So the former forms only the bores aligned with the pull. That is a real loss of
+    # open area, not a free fix, and it is measured rather than absorbed: the rest of
+    # the window set has to be punched by hand to the supplied skin STL, and
+    # `open_area_formed_frac` says how much of it that is. The fill gate is a
+    # transverse cylinder for the same reason and is likewise not formed — one hole,
+    # cut by hand.
+    d_win = float(res["window"]["d_mm"])
+    d_obj = true_sdf(obj, pitch)
+    axial = window_lattice(X, Y, Z, d=d_win, spacing=float(res["window"]["spacing_mm"]),
+                           axes=(axis,), normals=surface_normals(d_obj, pitch))
+    designed = (windows | gate) & gap        # `gap` is already outer-skin only
+    raw = windows & axial & gap
+    if spec.pour_clear > 0:
+        # optional relief so the pillar tips stop short of the pattern. Default 0.0
+        # on purpose: a pillar that does not touch leaves a film of rubber across the
+        # window, and a window that does not go through is not a window. The cost of
+        # 0.0 is a zero-allowance stack against print tolerance, which the MANIFEST
+        # states rather than hides.
+        raw = raw & (d_obj > spec.pour_clear)
+    pillars, pil = span_pillars(raw, block, obj, pitch, designed=designed,
+                                min_mm3=0.25 * np.pi / 4 * d_win ** 2 * spec.skin_t)
+
+    # ---- parting membrane ---------------------------------------------------
+    #
+    # `hoop_strain_one_piece` decides whether the cured skin comes off as a single
+    # glove, and on the vessel it does not: 163.5 % against a 62.5 % allowable, so
+    # `export` and `_bundle_parts` both ship skin_lower + skin_upper. The former was
+    # casting one continuous bag across the parting plane regardless — two STLs
+    # describing pieces the supplied former could not make, and a pattern sealed
+    # inside a closed rubber shell with no open area, which by this module's own
+    # relation needs infinite strain to extract. A shim spanning the gap at the parting
+    # plane casts the two halves the release analysis assumed.
+    #
+    # IT IS ITS OWN PART, not a feature of either half, and the release sweep is what
+    # forced that. Attached to the upper half it sits directly UNDER the upper skin, so
+    # lifting that half drives it up into the rubber; attached to the lower half it
+    # sits directly OVER the lower skin, with the mirror-image problem. A disc between
+    # two skin halves blocks a straight pull of whichever half carries it, which is why
+    # the real process pours one half against a removable wall and then the other. So
+    # it is emitted as `parting_plate`, lifted out at the parting plane once the upper
+    # half is off — an annulus around the pattern, which clears because the parting
+    # plane is at or near the widest section and the body narrows above it. That is a
+    # straight pull, so it is swept like everything else rather than asserted.
+    membrane = np.zeros_like(gap)
+    if not one_piece:
+        t_mem = max(1, int(round(max(2.0, 2.0 * pitch) / pitch)))
+        sl = [slice(None)] * 3
+        sl[axis] = slice(k_part, k_part + t_mem)
+        band = np.zeros_like(gap)
+        band[tuple(sl)] = True
+        membrane = gap & band
+
+    cavity = gap & ~pillars & ~membrane      # the silicone that actually gets cast
 
     # Spout and vent are PLACED, then verified to reach the cavity. A bore that
     # misses the gap is a former that cannot be filled, and it is invisible in a
     # render: the shell still prints, still passes a watertightness check, and the
     # silicone simply will not go in. So each bore is aimed at a measured point on
-    # the cavity — the spout at the cavity's own centroid in plan, the vent at the
-    # cavity voxel furthest along the pour axis, which is where air collects — and
-    # the realised open cross-section at the cavity is reported.
-    idx = np.argwhere(cavity)
+    # the cavity, and the realised open cross-section at the cavity is reported.
+    #
+    # THE BORES ARE CLIPPED TO ONE HALF. They were unbounded cylinders along the
+    # working axis subtracted from BOTH halves, which put a matching hole in the
+    # shell's floor directly under each one: measured on the tile, 1116 mm3 of
+    # material removed below the lowest cavity slice in the spout column and nothing
+    # left under it — a clean through-hole that pours the rubber onto the bench. The
+    # part still printed, still meshed watertight, and still balanced exactly, because
+    # `balance` was told the whole cylinder was a legitimate void.
+    #
+    # Clipping also makes the pour work when the skin is parted: the membrane seals
+    # the two cavities from each other, so each needs its own fill route, and each
+    # is fed from ITS OWN outer face (the lower half is inverted to pour it).
+    o = [i for i in range(3) if i != axis]
+    coords = (X, Y, Z)
+    A, B = coords[o[0]], coords[o[1]]
 
-    def _bore(cx, cy, d):
-        return np.sqrt((X - cx) ** 2 + (Y - cy) ** 2) <= d / 2
+    def _bore(ca, cb, d, side):
+        return (np.sqrt((A - ca) ** 2 + (B - cb) ** 2) <= d / 2) & side
 
-    def _aim(cands, d):
+    def _aim(target, cands, d, side):
         """Pick the candidate whose bore actually intersects the cavity.
 
         The cavity CENTROID is the obvious aim point and it is wrong for any annular
@@ -1344,44 +1535,311 @@ def build_pour_shell(res: dict, spec: SiliconeSpec,
         bore where there is no cavity at all, and the spout then opens into thin air.
         Measured on the shell: 0 mm3 of spout/cavity intersection. Candidates are
         therefore ranked by the open cross-section they actually deliver, and the
-        cavity's own voxels are always among them so a hit is guaranteed to exist.
+        target's own voxels are always among them so a hit is guaranteed to exist.
         """
-        best, best_v = None, -1.0
-        for (cx, cy) in cands:
-            v = float((_bore(cx, cy, d) & cavity).sum())
+        best, best_v = cands[0], -1.0
+        for c in cands:
+            v = float((_bore(c[0], c[1], d, side) & target).sum())
             if v > best_v:
-                best, best_v = (float(cx), float(cy)), v
-        return best, best_v
+                best, best_v = c, v
+        return (float(best[0]), float(best[1])), best_v
 
-    # candidates: the plan centroid (right for a solid pattern), plus a sample of
-    # real cavity voxels at the top of the pour (where a spout belongs) and at the
-    # very top slice (where air collects and the vent belongs)
-    top = idx[idx[:, axis] >= np.percentile(idx[:, axis], 92)]
-    step = max(1, len(top) // 64)
-    cand_top = [(origin[0] + i * pitch, origin[1] + j * pitch)
-                for i, j, _ in top[::step][:, [0, 1, 2]]] if len(top) else []
-    pts = origin + idx * pitch
-    cands = [(float(pts[:, 0].mean()), float(pts[:, 1].mean()))] + cand_top
-    (sx, sy), s_hit = _aim(cands, spec.spout_d)
-    (vx, vy), v_hit = _aim([c for c in cands if c != (sx, sy)] or cands, spec.vent_d)
+    def _cands(target):
+        idx = np.argwhere(target)
+        if not len(idx):
+            return [(0.0, 0.0)]
+        pts = np.asarray(origin, float) + idx * pitch
+        # the plan centroid (right for a solid pattern), plus a sample of real
+        # cavity voxels near the top of the pour, where a spout belongs
+        top = idx[idx[:, axis] >= np.percentile(idx[:, axis], 92)]
+        step = max(1, len(top) // 64)
+        out = [(float(pts[:, o[0]].mean()), float(pts[:, o[1]].mean()))]
+        out += [(float(origin[o[0]] + i[o[0]] * pitch),
+                 float(origin[o[1]] + i[o[1]] * pitch)) for i in top[::step]]
+        return out
 
-    spout = _bore(sx, sy, spec.spout_d)
-    ventv = _bore(vx, vy, spec.vent_d)
-    lower = block & below & ~spout & ~ventv
-    upper = block & ~below & ~spout & ~ventv
-    bal = balance(envelope, {"lower": lower, "upper": upper, "pattern": obj,
-                             "skin_cavity": cavity},
+    # One fill route per CAVITY BODY. With a parting membrane there are two, sealed
+    # from each other, and a single spout would fill one and starve the other.
+    lab_c, n_c = ndimage.label(cavity)
+    spout = np.zeros_like(cavity)
+    ventv = np.zeros_like(cavity)
+    side_union = np.zeros_like(cavity)   # every half a bore is allowed to touch
+    routes = []
+    for i in range(1, max(n_c, 1) + 1):
+        comp = (lab_c == i) if n_c else cavity
+        if not comp.any():
+            continue
+        # feed each body from the face of the half it mostly lives in
+        up_side = int((comp & ~below).sum()) >= int((comp & below).sum())
+        side = ~below if up_side else below
+        cands = _cands(comp)
+        (sx, sy), s_hit = _aim(comp, cands, spec.spout_d, side)
+        (vx, vy), v_hit = _aim(comp, [c for c in cands if c != (sx, sy)] or cands,
+                               spec.vent_d, side)
+        sp, vt = _bore(sx, sy, spec.spout_d, side), _bore(vx, vy, spec.vent_d, side)
+        spout |= sp
+        ventv |= vt
+        side_union |= side
+        routes.append({
+            "body": i, "half": "upper" if up_side else "lower",
+            "volume_mm3": float(comp.sum() * pitch ** 3),
+            "spout_xy": (sx, sy), "vent_xy": (vx, vy),
+            "spout_open_mm3": float((sp & comp).sum() * pitch ** 3),
+            "vent_open_mm3": float((vt & comp).sum() * pitch ** 3),
+            "fed": bool((sp & comp).any() and (vt & comp).any())})
+
+    # ---- tongue and groove, so the halves cannot shear ----------------------
+    #
+    # The former had no keys, no flange and no clamping feature of any kind, while the
+    # jacket built from the same measurements gets three chiral keys and nine bolts.
+    # Every millimetre the halves shear comes straight off the skin thickness on one
+    # side and adds it on the other — on the very dimension the module insists must be
+    # delivered rather than calibrated.
+    #
+    # An annular tongue rather than discrete keys, on purpose: it follows the body's
+    # own outline, so it cannot land on a bore or a thin section, it cannot fragment,
+    # and it doubles as the gasket land that stops uncured rubber flashing out of the
+    # butt joint. It lives strictly inside the rim (0.30-0.65 of the wall), so it can
+    # never intrude on the cavity.
+    t_h = max(3.0, 2.0 * pitch)
+    sl = [slice(None)] * 3
+    sl[axis] = slice(k_part, k_part + max(1, int(round(t_h / pitch))))
+    rim_band = np.zeros_like(gap)
+    rim_band[tuple(sl)] = True
+    # `~form` for the same reason the block has it, and it is not optional: `d_out` is
+    # a distance from the skin-clad body, so a band of it exists INSIDE a hollow bore
+    # as well as outside. Without the exclusion the vessel got a second tongue ring
+    # sitting in its own bore — 14 loose fragments at 20-25 mm radius, all `in_form`
+    # 1.00, which both fragmented the lower half and interfered with the release,
+    # because they lie exactly where the cast body has to come out.
+    tongue = ((d_out > 0.30 * rim_t) & (d_out <= 0.65 * rim_t)
+              & rim_band & envelope & ~form)
+    groove = ((d_out > 0.30 * rim_t - auto.key_clear)
+              & (d_out <= 0.65 * rim_t + auto.key_clear)
+              & rim_band & envelope & ~form)
+
+    solid = block | pillars
+    lower = ((solid & below) | tongue) & ~spout & ~ventv & ~membrane
+    upper = (solid & ~below & ~groove) & ~spout & ~ventv & ~membrane
+    plate = membrane & ~spout & ~ventv
+    bal = balance(envelope, {"lower": lower, "upper": upper, "parting_plate": plate,
+                             "pattern": obj, "skin_cavity": cavity},
                   {"spout": spout & ~obj, "vent": ventv & ~obj,
+                   "registration_clearance": groove & ~tongue,
+                   "orphan_shell": orphan,
                    "cast_hollow": form & ~obj}, pitch)
+
+    # Does the shell stay CLOSED under every bore? The balance cannot tell — it was
+    # handed the whole cylinder as a named void, so a bore that exits the far side is
+    # attributed and reads exact, which is how an unbounded cylinder put a matching
+    # hole in the floor under every spout and still reported `exact: True`. Measured
+    # directly instead: material the bores took out of the half they do not belong to.
+    holed = float((block & (spout | ventv) & ~side_union).sum() * pitch ** 3)
     reach = {"spout_reaches_cavity_mm3": float((spout & cavity).sum() * pitch ** 3),
-             "vent_reaches_cavity_mm3": float((ventv & cavity).sum() * pitch ** 3)}
-    reach["ok"] = bool(reach["spout_reaches_cavity_mm3"] > 0
-                       and reach["vent_reaches_cavity_mm3"] > 0)
-    return {"lower": lower, "upper": upper, "balance": bal, "wall_mm": shellwall,
-            "spout_xy": (sx, sy), "vent_xy": (vx, vy), "reach": reach,
+             "vent_reaches_cavity_mm3": float((ventv & cavity).sum() * pitch ** 3),
+             "cavity_bodies": int(n_c), "routes": routes,
+             "wrong_side_removal_mm3": holed}
+    reach["ok"] = bool(routes and all(r["fed"] for r in routes) and holed == 0.0)
+
+    return {"lower": lower, "upper": upper, "pattern": obj, "parting_plate": plate,
+            "balance": bal, "wall": wall, "wall_mm": shellwall, "rim_mm": rim_t,
+            "plastic_cm3": float((lower | upper | plate).sum() * pitch ** 3 / 1000.0),
+            "orphan_shell_mm3": float(orphan.sum() * pitch ** 3),
+            "pattern_cm3": float(obj.sum() * pitch ** 3 / 1000.0),
+            "spout_xy": routes[0]["spout_xy"] if routes else (0.0, 0.0),
+            "vent_xy": routes[0]["vent_xy"] if routes else (0.0, 0.0),
+            "reach": reach,
             "cavity_mm3": float(cavity.sum() * pitch ** 3),
-            "note": ("cavity is the skin's outer face, core is the printed master "
-                     "pattern; no draft needed because the cured skin flexes")}
+            "membrane_mm3": float(membrane.sum() * pitch ** 3),
+            "skin_parted_by_former": bool(not one_piece),
+            "cavity_matches_skin": cavity_vs_skin(cavity, p, pitch),
+            "registration": {"tongue_mm3": float(tongue.sum() * pitch ** 3),
+                             "clearance_mm": auto.key_clear,
+                             "height_mm": t_h,
+                             "note": "annular tongue on the lower half, matching "
+                                     "groove in the upper; also the gasket land"},
+            "pillars": pillar_report(pil, lower, upper),
+            "release": pour_release(lower, upper, plate, obj, obj | cavity, outer,
+                                    axis, spec.release_steps),
+            "procedure": (
+                "clamp both halves shut around the pattern and pour through the "
+                "spout" if one_piece else
+                "the skin is parted at the membrane, so the two cavities are sealed "
+                "from each other: each half is poured through its own spout, from "
+                "its own outer face (invert the lower half to pour it)"),
+            "note": ("cavity is the skin's outer face minus the window and gate "
+                     "pillars and the parting membrane; the core is the printed "
+                     "master pattern, which the pillars hold at the skin offset. No "
+                     "draft, because what the former releases from is the cured skin "
+                     "and that stretches")}
+
+
+def cavity_vs_skin(cavity: np.ndarray, parts: dict, pitch: float) -> dict:
+    """Does the former cast the skin the aeration solve was run on?
+
+    These were different objects and the difference was the one that decides the
+    design. `skin_all` carries the window, gate and vent cuts; the former was built
+    off `outer_body`, which is the offset body BEFORE any of them, so the rubber that
+    came out was the fully enclosing skin — the boundary condition this module scores
+    at cemented fraction 0.000 — while the tool reported the windowed skin's 0.861.
+    The mass quoted to the caster was short by the same 30 %.
+
+    Compared on the OUTER skin only. The core lining is cast in the same pour but its
+    bores have no former (a pillar inside the silhouette has nothing to attach to), so
+    it is reported separately rather than folded into a number that would hide it.
+    """
+    v = pitch ** 3
+    outer_skin = parts["skin_out"]
+    cav_out = cavity & ~parts["form"]
+    a, b = float(cav_out.sum() * v), float(outer_skin.sum() * v)
+    return {"cavity_outer_mm3": a, "skin_out_mm3": b,
+            "ratio": float(a / b) if b else 0.0,
+            "core_lining_mm3": float(parts["skin_core"].sum() * v),
+            "core_lining_windows_unformed": bool(parts["skin_core"].any()),
+            "ok": bool(b > 0 and abs(a / b - 1.0) <= 0.05),
+            "note": ("the former's outer cavity against the windowed skin the "
+                     "aeration solve used; within 5 % means the rubber that demoulds "
+                     "is the geometry that was scored")}
+
+
+def pour_release(lower: np.ndarray, upper: np.ndarray, plate: np.ndarray,
+                 pattern: np.ndarray, cast: np.ndarray,
+                 solid_skin: np.ndarray, axis: int, steps: int) -> dict:
+    """Can each former half be opened off the cured skin?
+
+    The module's standard is that an untested release proves nothing, and the former
+    was the one part never swept — its "no draft needed because the cured skin flexes"
+    note was an assertion rather than a result.
+
+    THE SWEEP TARGET IS `pattern | cavity`, NOT `outer_body`. What sits in the former
+    when it is opened is the pattern plus the skin *as cast*, and that skin has a hole
+    wherever a pillar stood. Sweeping against `outer_body` — the solid offset body —
+    asks the pillars to pass through rubber that does not exist there, so every former
+    with working pillars reports an interference. Measured on the vessel: `outer_body`
+    interferes on both halves at step 1, `pattern | cavity` clears both.
+
+    That distinction also supplies the DISCRIMINATION CONTROL this module demands, and
+    for once it is not contrived: sweeping the same half against the *unperforated*
+    skin MUST interfere, because the pillars occupy exactly the volume the windows
+    remove. A former whose pillars are absent or too short passes both sweeps, and the
+    control is what tells the two cases apart.
+
+    A pass is a statement about a RIGID pull. The cured skin can also stretch, which
+    only helps, so a clear result is conservative and an interference is real.
+    """
+    lo = mould.release_sweep(lower, cast, axis=axis, up=True, steps=steps)
+    up = mould.release_sweep(upper, cast, axis=axis, up=False, steps=steps)
+    c_lo = mould.release_sweep(lower, solid_skin, axis=axis, up=True, steps=steps)
+    c_up = mould.release_sweep(upper, solid_skin, axis=axis, up=False, steps=steps)
+    ctrl = bool(not c_lo["clears"] or not c_up["clears"])
+    # The plate is lifted off the PATTERN once the upper half and its skin are away,
+    # so it is swept against the bare pattern. It clears when the parting plane sits
+    # at or above the widest section — which is where `analyse_parting` puts it, but
+    # that is a consequence to be measured rather than an assumption to lean on.
+    pl = (mould.release_sweep(plate, pattern, axis=axis, up=False, steps=steps)
+          if plate.any() else {"clears": True, "first_interference_step": None,
+                               "max_interfering_voxels": 0, "steps_tested": 0,
+                               "note": "no parting plate — the skin is one piece"})
+    return {"lower": lo, "upper": up, "parting_plate": pl,
+            "control_unperforated_skin": {"lower": c_lo, "upper": c_up},
+            "control_interferes": ctrl,
+            "clears": bool(lo["clears"] and up["clears"] and pl["clears"]),
+            "ok": bool(lo["clears"] and up["clears"] and pl["clears"] and ctrl),
+            "order": ["lift the upper former half off",
+                      "peel the upper skin off the pattern",
+                      "lift the parting plate off over the pattern",
+                      "lift the lower former half off",
+                      "peel the lower skin off the pattern"],
+            "note": ("straight pull of each former half off the pattern plus the "
+                     "as-cast skin, and of the parting plate off the pattern; the "
+                     "control against an unperforated skin must interfere, or the "
+                     "pillars are not there")}
+
+
+def span_pillars(raw: np.ndarray, block: np.ndarray, obj: np.ndarray, pitch: float,
+                 *, min_mm3: float, designed: np.ndarray | None = None) -> tuple:
+    """Keep only the bores that actually BRIDGE former wall to pattern.
+
+    A pillar has to do two things and a bore does neither by construction. It must be
+    rooted in the former's own wall, or it prints as a loose peg lying in the cavity;
+    and it must land on the pattern, or it leaves a blind pocket, so the skin comes
+    out dimpled where a window should be and the aeration the solve reported never
+    materialises. Neither failure is visible in a render.
+
+    They are common, not hypothetical. `window_lattice` keeps a bore family only where
+    it runs within ~57 deg of the surface normal, and the accepted set is further cut
+    by the key/bolt keepout and the fill gate — so a bore can survive as a handful of
+    isolated voxels in the middle of the gap, touching nothing. Measured on the vessel
+    before this filter: 114 pillar bodies, of which 46 reached no wall and 34 reached
+    no pattern, and the resulting former exported as 23 lower and 25 upper STLs, all
+    but one of each a sub-cubic-centimetre speck.
+
+    Rejected bores are returned to the cavity, so the silicone simply fills them and
+    the skin has no window there. That is a real loss of open area, so it is counted
+    rather than absorbed: `formed_frac` is what the caster actually gets against what
+    the aeration solve assumed.
+    """
+    v = pitch ** 3
+    struct = ndimage.generate_binary_structure(3, 1)
+    des_mm3 = float(designed.sum() * v) if designed is not None else 0.0
+    lab, n = ndimage.label(raw, structure=struct)
+    if n == 0:
+        return raw, {"n": 0, "n_raw": 0, "dropped": 0, "volume_mm3": 0.0,
+                     "dropped_mm3": 0.0, "formed_frac": 0.0,
+                     "formed_vol_frac": 0.0, "designed_mm3": des_mm3,
+                     "open_area_formed_frac": 0.0, "ok": False,
+                     "halves_connected": True,
+                     "note": "NO window pillars — the former would cast an "
+                             "unperforated skin, which the aeration solve puts at "
+                             "0.000 cemented fraction"}
+    sizes = np.bincount(lab.ravel())
+    rooted = set(np.unique(lab[ndimage.binary_dilation(block, struct) & raw])) - {0}
+    landed = set(np.unique(lab[ndimage.binary_dilation(obj, struct) & raw])) - {0}
+    keep = [i for i in range(1, n + 1)
+            if i in rooted and i in landed and sizes[i] * v >= min_mm3]
+    out = np.isin(lab, keep) if keep else np.zeros_like(raw)
+    kept_mm3 = float(out.sum() * v)
+    lost_mm3 = float((raw & ~out).sum() * v)
+    return out, {
+        "n": len(keep), "n_raw": int(n), "dropped": int(n - len(keep)),
+        "volume_mm3": kept_mm3, "dropped_mm3": lost_mm3,
+        "formed_frac": float(len(keep) / n),
+        # BY VOLUME is the number to read. Most rejects are slivers a bore leaves
+        # where it grazes the gap, so the count fraction understates badly: on the
+        # vessel 78 of 114 bodies are dropped (0.32 by count) and they carry 11 % of
+        # the bore volume (0.89 formed). What the caster loses is open area, which
+        # scales with volume, not with how many pieces the labeller found.
+        "formed_vol_frac": float(kept_mm3 / max(kept_mm3 + lost_mm3, 1e-9)),
+        # …and this is what the CASTER loses. `formed_vol_frac` is the yield of the
+        # bore family the former is allowed to carry; `open_area_formed_frac` is that
+        # family against every window the skin was designed with, so it counts the
+        # transverse bores the former cannot form at all. The remainder has to be
+        # punched by hand to the supplied skin STL.
+        "designed_mm3": des_mm3,
+        "open_area_formed_frac": float(kept_mm3 / des_mm3) if des_mm3 else 0.0,
+        "min_printable_mm3": float(min_mm3),
+        "unrooted": int(n - len(rooted)), "missed_pattern": int(n - len(landed)),
+        "ok": bool(kept_mm3 > 0 and kept_mm3 / max(kept_mm3 + lost_mm3, 1e-9) >= 0.75),
+        "note": ("each kept pillar spans the skin gap — rooted in the former's wall, "
+                 "landing on the pattern — so it locates the pattern at the skin "
+                 "offset and forms one breather window. Dropped bores are not formed: "
+                 "the skin has no window there")}
+
+
+def pillar_report(pil: dict, lower: np.ndarray, upper: np.ndarray) -> dict:
+    """`span_pillars`'s findings plus the one thing only the finished halves can say.
+
+    Adding material to a part can only ever join it, but the split into halves is
+    taken afterwards — so a fragmented half means something in the pillar set, the
+    membrane or the bores left debris, and that is the check the mesh route cannot
+    make (`occ_to_mesh` keeps the largest body and reports the rest as watertight).
+    """
+    struct = ndimage.generate_binary_structure(3, 1)
+    n_lo = int(ndimage.label(lower, structure=struct)[1])
+    n_up = int(ndimage.label(upper, structure=struct)[1])
+    return {**pil, "bodies_lower": n_lo, "bodies_upper": n_up,
+            "halves_connected": bool(n_lo <= 1 and n_up <= 1),
+            "ok": bool(pil["ok"] and n_lo <= 1 and n_up <= 1)}
 
 
 # --------------------------------------------------------------------------
@@ -1459,6 +1917,13 @@ def export(res: dict, out_dir, prefix: str) -> dict:
         want["core"] = p["core"]
     want["pour_shell_lower"] = res["pour_shell"]["lower"]
     want["pour_shell_upper"] = res["pour_shell"]["upper"]
+    want["parting_plate"] = res["pour_shell"]["parting_plate"]
+    # The MASTER PATTERN, which the former is useless without. The former's cavity is
+    # the skin's outer face and the silicone fills the gap between it and the pattern;
+    # with no pattern in the box there is no gap, and the pour yields a solid rubber
+    # copy of the whole body instead of a mould. It was generated all along (`obj`,
+    # the grammar's own field) and was the one part never written out.
+    want["pattern"] = res["_parts"]["obj"]
 
     # One cavity lining per hollow core, so its expected component count is the
     # number of cores. Emitted as its own part because it demoulds differently from

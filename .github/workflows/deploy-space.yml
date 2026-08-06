@@ -1,0 +1,192 @@
+# Continuous deployment: GitHub main -> Hugging Face Space.
+#
+# The mechanism is `deploy/push_space.py` (huggingface_hub), NOT a git push to the
+# Space's own remote. A Space reads its sdk, app_port and title from README.md
+# frontmatter; this repository's README has none, and pushing it would drop the Space
+# to CONFIG_ERROR with nothing useful in the build log. `push_space.py` uploads
+# `deploy/space_README.md` AS `README.md` for exactly that reason, and filters out the
+# virtualenv, the meshes and the docs on the way.
+#
+# AUTHENTICATION IS KEYLESS — there is no HF_TOKEN secret to store or rotate.
+# The job mints a GitHub OIDC id token, `huggingface_hub` exchanges it at
+# https://huggingface.co/oauth/token for a Hub token scoped to this one Space and
+# valid for an hour. Hence `permissions: id-token: write` below, and the `spaces/`
+# prefix on HF_OIDC_RESOURCE — the exchange needs the repo TYPE, `create_repo` does
+# not. Requires huggingface_hub >= 1.19.0; `get_token()` does the exchange itself, so
+# no `hf` CLI step and no code change in push_space.py.
+#
+# Configure once, on the Hub, at
+#   https://huggingface.co/spaces/<owner>/<name>/settings -> Trusted Publishers
+# Add a GitHub Actions publisher. Claims are matched EXACTLY, no prefixes or regex:
+#   repository = yuvalkolodkingal/biocast
+#   branch     = main
+#   workflow   = deploy-space.yml
+# and in GitHub, Settings > Secrets and variables > Actions > Variables:
+#   HF_SPACE_ID = <owner>/<name>            e.g. megapandavip/biocast-studio
+# A Space id is not a credential, so it is a variable rather than a secret: as a
+# secret GitHub masks it, and the build-log URL this workflow prints on failure comes
+# out as https://huggingface.co/spaces/***?logs=build — the one link you need.
+name: deploy-space
+
+on:
+  push:
+    branches: [main]
+    # Kept a strict SUBSET of push_space.py's IGNORE list: these paths cannot change
+    # what the Space runs, so a commit touching only them need not redeploy.
+    # `deploy/**` is deliberately absent — deploy/space_README.md IS uploaded, as the
+    # Space card, so skipping it would make card edits silently never deploy.
+    paths-ignore:
+      - 'docs/**'
+      - 'stl/**'
+      - 'examples/**'
+      - 'README.md'
+      - 'CITATION.cff'
+      - '.gitignore'
+  workflow_dispatch:        # manual redeploy, e.g. after an HF-side build failure
+
+# One Space, one live state: supersede queued deploys rather than replaying them.
+# Cancelling mid-run is safe because the upload is a single atomic commit.
+concurrency:
+  group: hf-space
+  cancel-in-progress: true
+
+permissions:
+  contents: read            # nothing is written back to this repository
+  id-token: write           # required to mint the OIDC token for the HF exchange
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      HF_SPACE_ID: ${{ vars.HF_SPACE_ID }}
+      # `get_token()` sees this and exchanges the OIDC id token for a Space-scoped
+      # Hub token. Set at job level so every step that touches the Hub is covered.
+      HF_OIDC_RESOURCE: spaces/${{ vars.HF_SPACE_ID }}
+      HF_HUB_DISABLE_TELEMETRY: '1'
+    steps:
+      - name: Check the deploy is configured
+        run: |
+          test -n "$HF_SPACE_ID" || {
+            echo "::error::repository variable HF_SPACE_ID is not set (e.g. megapandavip/biocast-studio)"; exit 1; }
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1    # the upload ships the worktree, not the history
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'      # matches the Dockerfile's python:3.13-slim
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install
+        # requirements.txt is exactly what the Space image installs, so this step also
+        # proves the dependency set still resolves to linux/amd64 wheels before the
+        # container tries the same. huggingface_hub is deploy-only and correctly not
+        # in requirements.txt; it is pinned because push_space.py depends on the exact
+        # fnmatch semantics of `huggingface_hub.utils.filter_repo_objects`.
+        run: pip install -r requirements.txt 'huggingface_hub==1.26.0'
+
+      - name: Smoke test — the app imports and the engine solves
+        # There is no test suite in this repository, so this is the entire pre-deploy
+        # gate. Deliberately coarse (pitch 3.0, 32 draws) to stay a couple of seconds:
+        # a Docker image whose app crashes on first page load builds perfectly happily,
+        # and without this the run would go green anyway.
+        run: |
+          PYTHONPATH=. python - <<'PY'
+          import io
+          import biocast.gui.app                       # Streamlit API drift, syntax
+          from biocast.gui import engine as E
+          r = E.evaluate("shell", {}, {"d_max": 4.0},
+                         {"cure_days": 21.0, "rh_pct": 85.0}, n_mc=32, pitch=3.0)
+          assert 0.0 <= r["score"] <= 1.0, r["score"]
+          assert r["watertight"], "scored mesh is not watertight"
+          buf = io.BytesIO(); r["_mesh"].export(buf, file_type="stl")
+          assert buf.tell() > 84, f"empty STL ({buf.tell()} bytes)"
+          print(f"ok: score={r['score']:.3f}  stl={buf.tell()/1e3:.0f} kB")
+          PY
+
+      - name: Smoke test — the mould generates, meshes and bundles
+        # The Mould tab's whole value is the zip, and the failure mode that matters is
+        # a part that meshes empty or a bundle that raises — neither of which the
+        # import check above would see. Run on the tile at a coarsened pitch so it
+        # costs ~10 s rather than the ~37 s the grammar pitch takes.
+        run: |
+          PYTHONPATH=. python - <<'PY'
+          from biocast.gui import engine as E
+          res = E.generate_mould("tile", {}, {"d_max": 4.0},
+                                 {"cure_days": 21.0, "rh_pct": 85.0},
+                                 kind="rigid", pitch=2.4)
+          s = res["summary"]
+          assert s["balance_exact"], f"volume balance not exact: {s['unattributed_mm3']} mm3"
+          blob, man = E.mould_stl_bundle(res, prefix="ci_tile")
+          assert man, "bundle emitted no parts"
+          for m in man:
+              assert m["volume_cm3"] > 0, f"{m['file']} meshed empty"
+              assert m["watertight"], f"{m['file']} is not watertight"
+          print(f"ok: {len(man)} parts, {len(blob)/1e6:.1f} MB zip")
+          PY
+
+      - name: Verify the upload set
+        # Cheap guard on the IGNORE list: if a virtualenv, a mesh dump or docs/ ever
+        # slips past it, this prints it in the log before 10k files reach the Hub.
+        run: PYTHONPATH=. python deploy/push_space.py --repo "$HF_SPACE_ID" --dry-run
+
+      - name: Push to the Space
+        # No --public. The script defaults to private and `private` is ignored when
+        # the Space already exists, so publishing stays a deliberate manual act.
+        run: PYTHONPATH=. python deploy/push_space.py --repo "$HF_SPACE_ID"
+
+      - name: Wait for the Space to build
+        # Without this the job goes green while the Space sits in BUILD_ERROR — the
+        # upload succeeding says nothing about whether the container starts.
+        run: |
+          python - <<'PY'
+          import os, sys, time
+          from huggingface_hub import HfApi, SpaceStage
+
+          api, repo = HfApi(), os.environ["HF_SPACE_ID"]
+          BAD = {SpaceStage.BUILD_ERROR, SpaceStage.CONFIG_ERROR,
+                 SpaceStage.RUNTIME_ERROR, SpaceStage.NO_APP_FILE}
+          BUSY = {SpaceStage.BUILDING, SpaceStage.APP_STARTING,
+                  SpaceStage.RUNNING_BUILDING, SpaceStage.RUNNING_APP_STARTING}
+          ASLEEP = {SpaceStage.PAUSED, SpaceStage.STOPPED}   # the free tier sleeps
+          logs = f"https://huggingface.co/spaces/{repo}?logs=build"
+
+          def die(msg):                     # ::error:: is only parsed on stdout
+              print(f"::error::{msg} — {logs}", flush=True)
+              sys.exit(1)
+
+          # Phase 1: wait for the push to be PICKED UP. Until it is, `stage` still
+          # reports the previous build's RUNNING, and exiting on RUNNING immediately
+          # would be a false green for every deploy.
+          started, t0 = False, time.time()
+          while time.time() - t0 < 180:
+              stage = api.get_space_runtime(repo).stage
+              if stage in BAD:
+                  die(f"Space is {stage}")
+              if stage in ASLEEP:
+                  print(f"::warning::Space is {stage}; it will build when next woken. {logs}")
+                  sys.exit(0)
+              if stage in BUSY:
+                  started = True
+                  break
+              time.sleep(10)
+          if not started:
+              print(f"::warning::no rebuild observed within 180 s (stage still RUNNING). {logs}")
+              sys.exit(0)
+
+          # Phase 2: ride the build out.
+          t0 = time.time()
+          while time.time() - t0 < 900:
+              stage = api.get_space_runtime(repo).stage
+              print(f"  {int(time.time()-t0):4d}s  {stage}", flush=True)
+              if stage in BAD:
+                  die(f"Space is {stage}")
+              if stage == SpaceStage.RUNNING:
+                  print(f"Space is live: https://huggingface.co/spaces/{repo}")
+                  sys.exit(0)
+              time.sleep(15)
+          die("Space did not reach RUNNING within 15 minutes")
+          PY

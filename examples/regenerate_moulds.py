@@ -115,6 +115,31 @@ def main(argv=None):
                     f"silicone {name}: coverage target not met "
                     f"({aer['windowed']['cemented_frac_field']:.3f}), limited by "
                     f"{win['limited_by']}")
+            # The FORMER is the part of this path that has to be manufacturable
+            # before anything else can be: no printed former, no skin, no mould.
+            ps = res["pour_shell"]
+            pil, cvs = ps["pillars"], ps["cavity_matches_skin"]
+            print(f"  former: wall {ps['wall_mm']:.0f} mm "
+                  f"({ps['wall']['deflection_mm']:.3f} mm), cavity "
+                  f"{ps['cavity_mm3']/1000:.0f} cm3 in {ps['reach']['cavity_bodies']} "
+                  f"body(s) | pillars {pil['n']}/{pil['n_raw']} bodies, "
+                  f"{pil['formed_vol_frac']*100:.0f} % of bore volume formed)")
+            print(f"          cavity/skin {cvs['ratio']:.3f} | release "
+                  f"{'ok' if ps['release']['ok'] else 'INTERFERES'} | "
+                  f"parted by former: {ps['skin_parted_by_former']}")
+            for cond, msg in (
+                    (ps["reach"]["ok"], "spout/vent do not feed every cavity body"),
+                    (ps["balance"]["exact"], "former volume balance not exact"),
+                    (ps["wall"]["meets_target"], "former wall misses the deflection "
+                                                 "target under the silicone head"),
+                    (pil["ok"], "window pillars do not bridge wall to pattern, or a "
+                                "former half is in more than one piece"),
+                    (cvs["ok"], f"former casts a skin {cvs['ratio']:.3f}x the windowed "
+                                f"skin the aeration solve scored"),
+                    (ps["release"]["ok"], "a former half does not open off the skin")):
+                if not cond:
+                    problems.append(f"silicone {name} pour shell: {msg}")
+
             for k, v in rows.items():
                 if v.get("skipped"):
                     continue

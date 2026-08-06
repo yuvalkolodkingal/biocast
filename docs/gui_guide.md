@@ -44,9 +44,38 @@ section thickness, and the tab tells you the two ways out: the shortest cure tha
 opens the window, or the sieve target that does. The heat map at the bottom gives
 the minimum cure for every combination of aggregate size and humidity.
 
-**Explore.** Randomised search inside the current mix and cure settings — 12 to 96
-candidates, ranked, downloadable as CSV. Useful for finding the shape of the
-feasible region before hand-tuning in the Design tab.
+**Explore.** Finds the shape most likely to cement, inside the current mix and cure
+settings. Random sampling, then a compass search — each parameter up and down, the
+step halving only when a whole sweep fails to improve. The design currently on the
+sliders is scored first, so the search can never hand back something worse than what
+you have.
+
+Sampling is where the designs come from. **The refinement has not been shown to find
+better ones**: across all three typologies it matched the best sampled design every
+time and never beat it, at both a 25 % and a 10 % first step. It confirms that a design
+is a local optimum for single-parameter moves, which is worth something, and it is the
+only stage that can improve on a hand-tuned starting point — but spend budget on
+samples first.
+
+**Ranking is feasibility-first**, and this is not a detail. A design that breaks a
+hard rule cannot be cast, so no score buys its way past one that can; ties are settled
+by the 5th percentile of the score, then the median. Ranking on score alone inverts
+the ordering in practice — measured on the vessel at `d_max = 4 mm`, an 18 mm wall
+breaking *two* rules scores 0.207 against a 27 mm wall breaking *one* and scoring
+0.000 at the 5th percentile. On score alone the search parks on the 18 mm design and
+rejects every refinement.
+
+Measured, vessel at `d_max = 4 mm`, 21 d / 85 % RH, 24 samples and 2 refinement
+levels — 84 designs in 88 s on two cores:
+
+| | broken rules | score | feasible |
+|---|---|---|---|
+| slider defaults | 1 | 0.378 | no |
+| best found | **0** | **0.657** | **yes** |
+
+**Use this design** writes the winner into the Design tab's sliders; the Mould tab
+then generates the pattern, the former and the jacket for it. Everything is
+downloadable as CSV.
 
 ## Two things the GUI does differently from the raw package
 

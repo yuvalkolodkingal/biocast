@@ -2,7 +2,9 @@
 
 Two automatic paths share one measurement core: a **rigid** printed negative
 (§1–§8) and a **silicone skin + rigid jacket** (§9–§14). §15 covers the sealed-face
-boundary condition both paths need, §16 the GUI, §17 the files.
+boundary condition both paths need, §16 the GUI, §17 the files, and §18 six defects
+in the printed former — the part everything else depends on and the part Part II
+never checked.
 
 **Read §10 first if you are choosing between the two.** The reason to reach for
 silicone is not breathability — it is the opposite of breathable — and picking it
@@ -450,6 +452,24 @@ pitch (block 3.0 mm, tile 1.6 mm): a 0.30 mm key clearance and a 10 mm window
 lattice cannot be represented on a 3 mm voxel, and a mould verified against its own
 discretisation is not verified.
 
+**Generating and meshing are one action, and the result is held in session state.**
+Not a preference — the interface does not work otherwise. Streamlit re-runs the whole
+script on every widget interaction and a button reads True only on the run following
+its own click, so a tab guarded by `if not st.button("Generate"): return` with a
+separate "Prepare STLs" button below it can never reach the mesher: the click that
+presses it is the re-run on which the guard fires. The tab emptied instead, and **no
+STL could be obtained from the Mould tab by any sequence of clicks**. Deferring the
+mesh was the right instinct — it is the expensive step and most sessions only want the
+numbers — and it is unavailable here, so `mould_record` does both and returns plain
+data only. That second part matters too: the driver's return holds a few dozen full
+voxel grids (75-200 MB for a silicone solve), and parking it in session state
+multiplies that by the number of open sessions.
+
+The archive is filed into `1_print_these/` and `2_cast_these_in_silicone/`. The folder
+is the instruction: a flat zip gives a printer no way to tell that three of the files
+exist only to manufacture a fourth, and printing the skin is a silent failure — the
+rigid copy fits the jacket perfectly and releases nothing.
+
 ## 17. Files
 
 Silicone parts, per typology `{shell,block,tile}`:
@@ -460,6 +480,9 @@ Silicone parts, per typology `{shell,block,tile}`:
 - `stl/moulds_auto/auto_sil_<typ>_{jacket_lower,jacket_upper}.stl` — print these
 - `stl/moulds_auto/auto_sil_<typ>_{pour_shell_lower,pour_shell_upper}.stl` — the
   former the skin is cast in; a skin that cannot be manufactured is not a design
+- `stl/moulds_auto/auto_sil_<typ>_pattern.stl` — the master positive the former is
+  poured around. Print it; it is sacrificial and is not part of the mould. Without
+  it the pour has no gap to fill and yields a solid rubber copy of the body — see §18
 - `data/mould_auto_silicone_verification.csv` — full precision, 75 columns
 - `data/elastomer_params.json` — 35 provenance-tagged rows, 15 MEASURED /
   14 DERIVED / 6 ASSUMED, 9 condition-mismatch flags
@@ -472,7 +495,185 @@ STLs are **not committed** (~291 MB). Regenerate with:
 
 which re-runs every check and prints failures rather than suppressing them.
 
-## 18. What this record does not cover
+## 18. The former could not have made the skin — six defects and what changed
+
+Part II above verifies the skin, the jacket and the windows, and it verifies them
+correctly. What it did **not** verify is the one part everything else depends on:
+`build_pour_shell`, the printed former the rubber is poured in. Nothing downstream
+exists without it, and it carried six defects, every one of which produced a part
+that printed, meshed watertight, and passed the module's own volume balance.
+
+That last point is the lesson rather than an aside. The former's `balance` reported
+`unattributed 0.0 mm3, exact: True` on geometry with a hole in its floor, because the
+balance was handed the whole bore cylinder as a named void — a check cannot catch what
+it was told to expect. §6 lists five silent failures found by a check disagreeing with
+a count; these five were found by asking a different question: *could someone actually
+build this?*
+
+| | before | after |
+|---|---|---|
+| skin the former casts | **un-windowed** — `cavity = outer & ~obj` off `outer_body`, which predates every window cut | windowed and gated, via pillars |
+| master pattern | generated as `obj`, exported nowhere, ≥ `skin_t` from every former voxel | exported as `pattern`; located by the pillars |
+| spout / vent | unbounded cylinders on the working axis, subtracted from **both** halves | clipped to one half, one fill route per cavity body |
+| parted skin | cavity continuous across the parting plane | parting membrane when `one_piece_ok` is false |
+| half-to-half registration | none — a butt joint | annular tongue and groove, `key_clear` clearance |
+| former wall | `max(8.0, 0.5 * jacket_wall)`, an unchecked literal | `auto_wall` at the silicone head, reported with its deflection |
+| former release | never swept; "the cured skin flexes" asserted | `release_sweep` on both halves against the skin-clad pattern |
+| former extent | lined the inside of a hollow body too | external only (`~form`); the internal plug was trapped |
+
+**The first one is the one that mattered most.** `outer_body` is the offset body
+*before* the window lattice, the fill gate and the vent are cut from it, so the rubber
+that demoulded from the shipped former was a fully enclosing skin — precisely the
+`enclosed_skin` boundary condition §11 scores at **0.000 cemented fraction**. The
+windowed skin STL travelled in the same zip, describing a part the supplied former
+could not produce, and the 0.861 the Mould tab printed was for geometry nobody could
+make. Measured on the tile before the fix: cavity 784 563 mm³ against the 550 327 mm³
+of windowed skin the tool quoted — 29.6 % of the cavity was window volume the former
+did not form, and the caster was told to mix 633 g of rubber into a cavity needing 902.
+
+### Why the window bores became the pattern's locating feature
+
+The pattern has to sit at exactly `skin_t` from the cavity wall or the skin comes out
+wedge-shaped, and nothing held it: `block = envelope & ~outer` with `outer = obj |
+skin_all` puts every former voxel at least a skin thickness from every pattern voxel,
+so contact was zero **by construction** — measured at 0.0 mm³.
+
+Carrying the window bores into the former as solid pillars spanning the gap solves
+both problems with one feature. The pillars are rooted in the former's wall, land on
+the pattern, hold it at the offset, and cast the breather windows into the skin, which
+then demoulds already perforated. A separate set of locating pins would have left a
+second set of holes to patch.
+
+**They cannot simply be taken as `windows & gap`**, for two independent reasons, and
+the second is the more interesting.
+
+*Most bores do not survive as pillars.* `window_lattice` keeps a bore family only where
+it runs within ~57° of the surface normal, and the accepted set is further cut by the
+key/bolt keepout and the fill gate, so a bore can survive as a few isolated voxels
+floating in the middle of the gap. Measured on the vessel: **114 pillar bodies, 46 of
+which reached no wall and 34 no pattern**, and the former exported as 23 lower plus 25
+upper STLs — all but one of each a sub-cubic-centimetre speck sitting in the print
+folder. `span_pillars` therefore keeps only components adjacent to *both* `block` and
+`obj` and above a printable volume; the rest return to the cavity. Read
+`formed_vol_frac`, not `formed_frac`: the rejects are slivers a bore leaves where it
+grazes the gap, so the count fraction understates badly — 78 of 114 bodies dropped is
+0.32 by count and **0.89 by volume**, and what the caster loses is open area, which
+scales with volume. The corresponding guard in the bundler is `MIN_PRINTABLE_MM3`: a
+part that has shed debris must not be written one file per fragment, and what falls
+below the floor is listed in `MANIFEST.txt` rather than dropped quietly.
+
+*The lattice has three bore families and the former may carry only one.* This is the
+real limit of a two-part rigid former. On the skin and the jacket a bore is a **cut**;
+in the former it is **solid material**, and a peg running across the draw cannot come
+back out of the hole it made — opening the halves shears it through the cured rubber.
+With all three families carried in, ~80 % of the vessel's pillar volume ran transverse
+and `pour_release` interfered on both halves at step one: the check catching a former
+that would otherwise have been printed, poured, cured for a day, and then found welded
+shut.
+
+So the former forms **only the draw-axis family**, and the remaining windows plus the
+fill gate are punched by hand to the supplied skin STL.
+`open_area_formed_frac` reports how much of the designed window area that leaves. It is
+a limitation to be stated, not a defect to be fixed, and it is stated in the tab and in
+`MANIFEST.txt` rather than absorbed: **the cemented fraction is solved on the full
+window set**, so it describes a skin whose remaining windows have been punched, not one
+straight out of the former.
+
+### The former is where the plastic goes, and three rules were wrong about it
+
+The former is printed once per design and thrown away, so its filament is the running
+cost of this workflow. Three constraints were setting its thickness and none of them
+was about this part.
+
+| | inherited | former's own | why the inherited one does not apply |
+|---|---|---|---|
+| wall floor | `AutoSpec.wall_min` 12 mm | `pour_wall_min` 3 mm | 12 mm is a floor for a mould carrying a tamped 1890 kg/m³ mix. This holds an untamped rubber head at 0.5–2.3 kPa, and the plate solve asks for 3.7 mm on the vessel — the floor, not the physics, was setting the thickness. What does apply is printability. |
+| deflection | `deflect_target_mm` 0.10 mm | `pour_deflect_mm` 0.50 mm | 0.10 mm exists because a bulging mould casts an out-of-tolerance **section**, and section is what the drying and oxygen models are most sensitive to. The former's deflection lands on the skin's **outer** face, which mates with the jacket through 6 mm of rubber; the cast body's geometry is set by the pattern, which is rigid. `t` goes as the cube root of the target, so this is another 1.7×. |
+| extent | `envelope & ~outer` | also `& ~form` | a hollow body got a shellwall-thick plug in its bore, trapped behind an aperture several times narrower than the cavity behind it. |
+
+Measured on the vessel: **1062 → 223 cm³**, about a fifth of the filament, on a part
+whose deflection is still 0.19 mm against a 0.50 mm target. The parting land is
+thickened back to `pour_rim_min` locally, because a 3 mm rim cannot host a tongue and
+groove and is nothing to clamp on — a narrow band costs a few cm³ where thickening the
+whole shell to suit would cost the saving twice over.
+
+The trapped plug is worth dwelling on: it printed, meshed watertight, and balanced
+exactly. Only the release sweep saw it, and only once the sweep had the right obstacle
+set (below). It could not have been dug out afterwards without destroying the skin.
+
+### The release test needed the right obstacle, and a control
+
+Sweeping a former half against `outer_body` — the solid offset body — asks each pillar
+to pass through rubber that is not there, because the pillar is what removed it. Every
+working former then reports an interference. What sits in the former when it opens is
+the pattern plus the skin **as cast**, so the obstacle is `pattern | cavity`.
+
+That distinction also supplies the discrimination control this module demands, and for
+once it is not contrived: sweeping the same half against the *unperforated* skin
+**must** interfere, because the pillars occupy exactly the volume the windows remove. A
+former whose pillars are missing or too short clears both sweeps, and only the control
+tells the two cases apart.
+
+### The parted skin was the subtlest of the six, and the fix needed a third part
+
+`hoop_strain_one_piece` puts the vessel's one-piece stretch at 163.5 % against a
+62.5 % allowable, so `export` and `_bundle_parts` both ship `skin_lower` + `skin_upper`
+— and the former cast one continuous bag across the parting plane. Two STLs describing
+pieces the supplied former could not make, and worse: a closed rubber shell around a
+rigid pattern has no open area, so by this module's own relation the pattern needs
+infinite strain to extract. The sacrificial master was permanently encapsulated. The
+fix reads the decision that already exists rather than re-deriving it — a membrane is
+inserted at the parting plane exactly when `one_piece_ok` is false — and the two
+resulting cavities are sealed from each other, so each gets its own fill route.
+
+**The membrane had to become its own part, and the release sweep is what forced it.**
+Attached to the upper half it sits directly *under* the upper skin, so lifting that
+half drives it up into the rubber; attached to the lower half it sits directly *over*
+the lower skin, with the mirror-image problem. A disc between two cured skin halves
+blocks a straight pull of whichever half carries it — which is exactly why the real
+process pours one half against a removable wall and then the other. So it is emitted as
+`parting_plate` and lifted out over the pattern once the upper half is off. That clears
+because the parting plane sits at or near the widest section and the body narrows above
+it, but that is a consequence measured by its own sweep rather than an assumption.
+
+### What is still not covered on this path
+
+- **Coverage is not re-solved on the window set the former actually makes.** The
+  aeration numbers in §11 are for the designed lattice; the former casts the draw-axis
+  family, and `open_area_formed_frac` states the gap. The honest reading is that the
+  reported cemented fraction applies **after** the transverse windows are punched. A
+  proper fix re-runs the coverage surrogate against the formed set and reports both.
+- **The core lining has no former.** A pillar inside the silhouette has no former
+  material to attach to, so the bores through a hollow core's lining are not formed.
+  On the vessel that is 158 056 mm³ of rubber — 33 % of the pour — lining the bore
+  face, cast solid while the shipped `skin_core_lining.stl` shows it perforated.
+  `cavity_matches_skin` compares the outer skin only and reports
+  `core_lining_windows_unformed` separately rather than folding it into a number that
+  would hide it; the tab and the manifest say the lining's windows are hand-punched.
+- **The vessel's former does not open, and the generator says so.** `pour_shell` fails
+  its own release sweep on the shell typology while the tile passes every check. The
+  two causes found so far were fixed — transverse pillars, and a tongue ring that
+  `d_out` also placed *inside* the bore (14 loose fragments at 20–25 mm radius, all
+  `in_form` 1.00, which both fragmented the lower half and sat exactly where the cast
+  has to come out) — and an interference remains. `mould_record` reports
+  `manufacturable = False` with the reason, and the Mould tab leads with it, but the
+  vessel may simply need a different parting or a three-part former. Not diagnosed.
+- **`pour_clear` defaults to 0.0**, so the pillar tips are generated exactly on the
+  pattern and the stack has no allowance for FDM tolerance. That is deliberate — a
+  pillar that stops short leaves a film of rubber across its window, and a window that
+  does not go through is not a window — but it means print tolerance lands on `skin_t`,
+  which is the one dimension this module insists must be delivered rather than
+  calibrated.
+- **Realised draft is not measured on the jacket cavity.** §2 established that the
+  rigid path must measure draft on the *field*; the silicone path still does not
+  measure it at all, and at the GUI's coarsened pitch the tile's 1.06 mm of relief is
+  sub-voxel and quantises away entirely — `cavity & ~outer_body` measures 0.0 mm³
+  while the tool reports 3.000°.
+- **`skin_free_clear_mm` is passed as a literal 0.0** into `verify_release`, so the
+  clearance in its report is stated rather than measured.
+- Nothing here has been poured. This is geometry, not a manufacturing sign-off.
+
+## 19. What this record does not cover
 
 No part of this is a structural sign-off. Nothing here has been cast: the
 verification is geometric and transport-based, run against models whose parameters

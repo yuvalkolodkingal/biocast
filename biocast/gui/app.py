@@ -2,9 +2,13 @@
 
 Run:  PYTHONPATH=. streamlit run biocast/gui/app.py
 
-Three tabs:
+Four tabs:
   Design    move sliders, see the mesh in 3D, the four subscores, and every
             constraint verdict update live; download STL.
+  Mould     generate, verify and mesh a rigid or silicone mould for that shape in
+            one action, and download every part as a zip with a fabrication
+            manifest. The silicone path is two castings: it also emits the master
+            pattern and the printed former the rubber itself is poured in.
   Process   the feasible window as a map — where the castability floor and drying
             ceiling cross, and what cure or sieve opens it.
   Explore   randomised search inside the current process settings, ranked.
@@ -20,6 +24,7 @@ import json
 import numpy as np
 import pandas as pd
 import streamlit as st
+from matplotlib.figure import Figure
 
 from biocast.gui import engine as E
 from biocast.gui import viewer as V
@@ -91,76 +96,150 @@ def sidebar_process():
             jam_ratio, n_mc)
 
 
-def geom_controls(typology: str, d_max: float) -> dict:
-    """Typology-specific sliders. Floors that depend on d_max are shown inline."""
-    fillet_floor = 1.5 * d_max
-    if typology == "shell":
-        st.markdown("**Hollow ovoid vessel** — the typology that succeeded in the paper")
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            a = st.slider("Semi-axis a (mm)", 30.0, 100.0, 55.0, 1.0)
-            b = st.slider("Semi-axis b (mm)", 30.0, 100.0, 55.0, 1.0)
-            c = st.slider("Semi-axis c, long (mm)", 40.0, 150.0, 78.0, 1.0)
-        with c2:
-            n = st.slider("Superellipsoid exponent n", 2.0, 4.0, 2.4, 0.1,
-                          help="2 = ellipsoid, higher = boxier")
-            ovoid = st.slider("Egg taper", 0.0, 0.45, 0.28, 0.01)
-            wall = st.slider("Wall thickness (mm)", 6.0, 45.0, 22.0, 0.5,
-                             help=f"Castability floor here is {6*d_max:.0f} mm "
-                                  f"at d_max = {d_max:g} mm")
-        with c3:
-            aperture_r = st.slider("Aperture radius (mm)", 0.0, 35.0, 16.0, 0.5,
-                                   help="This is a feed passage, so the bore diameter "
-                                        "must also clear the jamming limit")
-            fillet_r = st.slider("Fillet radius (mm)", 2.0, 20.0,
-                                 max(8.0, fillet_floor), 0.5,
-                                 help=f"Your rule: >= 1.5 x d_max = {fillet_floor:.1f} mm")
-        return dict(a=a, b=b, c=c, n=n, ovoid=ovoid, wall=wall,
-                    aperture_r=aperture_r, fillet_r=fillet_r)
+#: THE SEARCH SPACE, IN ONE PLACE. `geom_controls` builds its sliders from this and
+#: `search_shapes` samples and refines inside it, so the shape you can dial in by hand
+#: and the shape the search can reach are the same set.
+#:
+#: They were not. The explorer drew `wall` from 8-42 mm against a slider offering
+#: 6-45, `a` and `b` from 40-90 against 30-100, and the tile's `groove_pitch` from
+#: 30-80 against 25-90 — so the search could not reach designs the sliders offered,
+#: and a design the search found could sit outside what the sliders could reproduce.
+#: Two hand-maintained copies of the same bounds is one copy too many.
+#:
+#: `floor` is a multiple of d_max that raises the DEFAULT (not the bound), so the
+#: interface opens on a design that already respects the rule instead of on one the
+#: verdict table immediately rejects.
+GEOM_SPACE = {
+    "shell": {
+        "a": dict(label="Semi-axis a (mm)", lo=30.0, hi=100.0, val=55.0, step=1.0),
+        "b": dict(label="Semi-axis b (mm)", lo=30.0, hi=100.0, val=55.0, step=1.0),
+        "c": dict(label="Semi-axis c, long (mm)", lo=40.0, hi=150.0, val=78.0, step=1.0),
+        "n": dict(label="Superellipsoid exponent n", lo=2.0, hi=4.0, val=2.4, step=0.1,
+                  help="2 = ellipsoid, higher = boxier"),
+        "ovoid": dict(label="Egg taper", lo=0.0, hi=0.45, val=0.28, step=0.01),
+        "wall": dict(label="Wall thickness (mm)", lo=6.0, hi=45.0, val=22.0, step=0.5,
+                     help="Castability floor here is 6 x d_max"),
+        "aperture_r": dict(label="Aperture radius (mm)", lo=0.0, hi=35.0, val=16.0,
+                           step=0.5,
+                           help="A feed passage, so the bore diameter must also clear "
+                                "the jamming limit"),
+        "fillet_r": dict(label="Fillet radius (mm)", lo=2.0, hi=20.0, val=8.0, step=0.5,
+                         floor=1.5, help="Your rule: >= 1.5 x d_max"),
+    },
+    "block": {
+        "face_shell": dict(label="Face shell (mm)", lo=20.0, hi=55.0, val=34.0,
+                           step=1.0, help="ASTM C90 minimum is 32 mm for 8 in units"),
+        "web": dict(label="Web (mm)", lo=15.0, hi=45.0, val=30.0, step=1.0,
+                    help="C90 permits 19 mm; your notes say 25 mm"),
+        "core_taper": dict(label="Core draft (deg)", lo=0.0, hi=5.0, val=2.0, step=0.1,
+                           help="Needed for release of a fragile green body"),
+        "fillet_r": dict(label="Fillet radius (mm)", lo=2.0, hi=20.0, val=8.0, step=0.5,
+                         floor=1.5, help="Your rule: >= 1.5 x d_max"),
+        "groove_depth": dict(label="Face groove depth (mm)", lo=0.0, hi=20.0, val=0.0,
+                             step=0.5),
+        "groove_width": dict(label="Face groove width (mm)", lo=0.0, hi=50.0, val=0.0,
+                             step=1.0),
+    },
+    "tile": {
+        "t": dict(label="Thickness (mm)", lo=20.0, hi=60.0, val=40.0, step=1.0),
+        "groove_depth": dict(label="Relief depth (mm)", lo=1.0, hi=10.0, val=3.0,
+                             step=0.5,
+                             help="Panot practice is 2-3 mm; the regulated ceiling "
+                                  "is 5 mm"),
+        "groove_width": dict(label="Channel width (mm)", lo=5.0, hi=45.0, val=24.0,
+                             step=1.0, help="Jamming floor is 6 x d_max"),
+        "groove_pitch": dict(label="Channel pitch (mm)", lo=25.0, hi=90.0, val=50.0,
+                             step=1.0),
+        "fillet_r": dict(label="Fillet radius (mm)", lo=2.0, hi=18.0, val=8.0, step=0.5,
+                         floor=1.5),
+        "joint": dict(label="Joint gap (mm)", lo=2.0, hi=15.0, val=6.0, step=0.5),
+    },
+}
 
+#: Discrete parameters, which the optimiser enumerates rather than perturbs.
+GEOM_CHOICES = {"shell": {}, "block": {"n_cores": [2, 3]},
+                "tile": {"pattern": ["grid", "diagonal", "flower", "radial"]}}
+
+#: Which column each control lands in, so the layout survives the table-driven build.
+GEOM_COLS = {
+    "shell": (("a", "b", "c"), ("n", "ovoid", "wall"), ("aperture_r", "fillet_r")),
+    "block": (("face_shell", "web"), ("n_cores", "core_taper"),
+              ("fillet_r", "groove_depth", "groove_width")),
+    "tile": (("t", "pattern"), ("groove_depth", "groove_width", "groove_pitch"),
+             ("fillet_r", "joint")),
+}
+
+GEOM_HEADING = {
+    "shell": "**Hollow ovoid vessel** — the typology that succeeded in the paper",
+    "block": "**Hollow-core masonry unit** — CMU module, 390 x 190 x 190 mm",
+    "tile": "**Relief paving tile** — Panot type, 200 x 200 mm",
+}
+
+
+def geom_default(typology: str, name: str, d_max: float) -> float:
+    s = GEOM_SPACE[typology][name]
+    return float(min(s["hi"], max(s["val"], s.get("floor", 0.0) * d_max)))
+
+
+def geom_key(typology: str, name: str) -> str:
+    """Widget key, so a design found by the search can be written into the sliders.
+
+    Streamlit only lets a widget's value be set through `session_state` under its own
+    key, and only before the widget is built for that run — which is why the search's
+    "use this design" writes the keys and then reruns rather than returning a dict.
+    """
+    return f"geom_{typology}_{name}"
+
+
+def derive_geom(typology: str, g: dict) -> dict:
+    """The parameters the grammars want that are implied rather than dialled."""
+    g = dict(g)
     if typology == "block":
-        st.markdown("**Hollow-core masonry unit** — CMU module, 390 x 190 x 190 mm")
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            face_shell = st.slider("Face shell (mm)", 20.0, 55.0, 34.0, 1.0,
-                                   help="ASTM C90 minimum is 32 mm for 8 in units")
-            web = st.slider("Web (mm)", 15.0, 45.0, 30.0, 1.0,
-                            help="C90 permits 19 mm; your notes say 25 mm")
-        with c2:
-            n_cores = st.selectbox("Cores", [2, 3], 0)
-            core_taper = st.slider("Core draft (deg)", 0.0, 5.0, 2.0, 0.1,
-                                   help="Needed for release of a fragile green body")
-        with c3:
-            fillet_r = st.slider("Fillet radius (mm)", 2.0, 20.0,
-                                 max(8.0, fillet_floor), 0.5,
-                                 help=f"Your rule: >= {fillet_floor:.1f} mm")
-            groove_depth = st.slider("Face groove depth (mm)", 0.0, 20.0, 0.0, 0.5)
-            groove_width = st.slider("Face groove width (mm)", 0.0, 50.0, 0.0, 1.0)
-        return dict(face_shell=face_shell, web=web, n_cores=int(n_cores),
-                    core_taper=core_taper, fillet_r=fillet_r,
-                    groove_depth=groove_depth, groove_width=groove_width,
-                    groove_count=2 if groove_depth > 0 else 0)
+        g["groove_count"] = 2 if g.get("groove_depth", 0.0) > 0 else 0
+    if typology == "tile":
+        g["thick_tile"] = g.get("t", 40.0) >= 35.0
+    return g
 
-    st.markdown("**Relief paving tile** — Panot type, 200 x 200 mm")
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        t = st.slider("Thickness (mm)", 20.0, 60.0, 40.0, 1.0)
-        pattern = st.selectbox("Pattern", ["grid", "diagonal", "flower", "radial"])
-    with c2:
-        groove_depth = st.slider("Relief depth (mm)", 1.0, 10.0, 3.0, 0.5,
-                                 help="Panot practice is 2-3 mm; the regulated ceiling "
-                                      "is 5 mm")
-        groove_width = st.slider("Channel width (mm)", 5.0, 45.0, 24.0, 1.0,
-                                 help=f"Jamming floor is {6*d_max:.0f} mm at "
-                                      f"d_max = {d_max:g} mm")
-        groove_pitch = st.slider("Channel pitch (mm)", 25.0, 90.0, 50.0, 1.0)
-    with c3:
-        fillet_r = st.slider("Fillet radius (mm)", 2.0, 18.0,
-                             max(8.0, fillet_floor), 0.5)
-        joint = st.slider("Joint gap (mm)", 2.0, 15.0, 6.0, 0.5)
-    return dict(t=t, pattern=pattern, groove_depth=groove_depth,
-                groove_width=groove_width, groove_pitch=groove_pitch,
-                fillet_r=fillet_r, joint=joint, thick_tile=t >= 35.0)
+
+def geom_controls(typology: str, d_max: float) -> dict:
+    """Typology-specific sliders, built from `GEOM_SPACE`.
+
+    A design handed over by the search is applied HERE, at the top, rather than
+    written by the button that chose it. Streamlit refuses to modify a widget's key
+    once that widget has been instantiated in the current run, and `tab_design` runs
+    before `tab_explore` in every run — so the button's own
+    `st.session_state[geom_key(...)] = v` raised `StreamlitAPIException` on the first
+    slider it touched. Staging the values under a plain key and applying them on the
+    next run, before any widget exists, is the way round it.
+    """
+    pend = st.session_state.pop("geom_pending", None)
+    if pend and pend["typology"] == typology:
+        for k, v in pend["values"].items():
+            st.session_state[geom_key(typology, k)] = v
+    st.markdown(GEOM_HEADING[typology])
+    space, choices = GEOM_SPACE[typology], GEOM_CHOICES[typology]
+    fillet_floor = 1.5 * d_max
+    out = {}
+    for col, names in zip(st.columns(3), GEOM_COLS[typology]):
+        with col:
+            for name in names:
+                key = geom_key(typology, name)
+                if name in choices:
+                    opts = choices[name]
+                    out[name] = st.selectbox(name.replace("_", " ").capitalize(),
+                                             opts, key=key)
+                    continue
+                s = space[name]
+                hint = s.get("help", "")
+                if s.get("floor"):
+                    hint += f" = {s['floor'] * d_max:.1f} mm at d_max = {d_max:g} mm"
+                elif "6 x d_max" in hint:
+                    hint += f" = {6 * d_max:.0f} mm"
+                if key not in st.session_state:
+                    st.session_state[key] = geom_default(typology, name, d_max)
+                out[name] = st.slider(s["label"], s["lo"], s["hi"], step=s["step"],
+                                      key=key, help=hint or None)
+    return derive_geom(typology, out)
 
 
 # ----------------------------------------------------------------------------- views
@@ -266,8 +345,16 @@ def verdict_table(r: dict):
 
 
 def section_figure(r: dict):
-    """Mid-plane oxygen field — where the design does and does not cement."""
-    import matplotlib.pyplot as plt
+    """Mid-plane oxygen field — where the design does and does not cement.
+
+    Built with `Figure()` rather than `plt.subplots()` on purpose. `st.pyplot(fig)`
+    defaults to `clear_figure=False` whenever a figure is passed, so a pyplot-created
+    figure stays in matplotlib's global `Gcf` registry forever — and every tab body
+    re-runs on every widget interaction, so a long session accumulates hundreds of
+    them. That eats exactly the RAM headroom `mould_pitch_for` is calibrated against,
+    which would surface as an out-of-memory kill during a silicone solve rather than
+    as the figure leak it is. A bare `Figure` is never registered.
+    """
     ox = r.get("_oxygen")
     if ox is None:
         return None
@@ -276,7 +363,8 @@ def section_figure(r: dict):
     sl_occ = occ[:, j, :].T
     sl_C = np.where(sl_occ, C[:, j, :].T, np.nan)
 
-    fig, ax = plt.subplots(figsize=(5.2, 4.4))
+    fig = Figure(figsize=(5.2, 4.4))
+    ax = fig.subplots()
     ax.imshow(np.where(sl_occ, 0.0, np.nan), origin="lower", cmap="Greys",
               vmin=0, vmax=1, interpolation="nearest")
     im = ax.imshow(sl_C, origin="lower", cmap="viridis", vmin=0.0, vmax=8.42,
@@ -295,14 +383,18 @@ def section_figure(r: dict):
 
 
 def window_figure(mix, proc, jam_ratio):
-    """The feasible window: castability floor against drying ceiling."""
-    import matplotlib.pyplot as plt
+    """The feasible window: castability floor against drying ceiling.
+
+    `Figure()` rather than `plt.subplots()` — see `section_figure`. This one runs
+    unguarded on every single script run, so it is the larger of the two leaks.
+    """
     dmx = np.linspace(1.0, 8.0, 200)
     floor = jam_ratio * dmx
     w_now = E.feasible_window(mix["d_max"], proc["cure_days"], proc["rh_pct"], jam_ratio)
     ceiling = w_now["ceiling_mm"]
 
-    fig, ax = plt.subplots(figsize=(6.6, 4.3))
+    fig = Figure(figsize=(6.6, 4.3))
+    ax = fig.subplots()
     ax.fill_between(dmx, floor, ceiling, where=floor <= ceiling, alpha=0.25,
                     color="#2e7d32", label="feasible section band")
     ax.plot(dmx, floor, color="#2e7d32", lw=2,
@@ -329,6 +421,29 @@ def window_figure(mix, proc, jam_ratio):
 
 
 # ----------------------------------------------------------------------------- tabs
+def _evaluate_memo(typology, geom_kw, mix, proc, jam_ratio, n_mc, with_field):
+    """The Design-tab solve, memoised on its full input set for the session.
+
+    `st.tabs` is client-side only: every tab body executes on every script run, and
+    every widget interaction anywhere on the page is a script run. So each click in
+    the Mould tab — including the STL download — was silently re-running a 0.6-0.9 s
+    geometry-and-score solve for the Design tab as a side effect.
+
+    Held in `session_state` rather than `st.cache_data`, which pickles the return
+    value: this one carries a Trimesh and the diagnostic voxel grids, and
+    round-tripping those through pickle costs more than the solve it would save.
+    """
+    sig = json.dumps([typology, geom_kw, mix, proc, jam_ratio, n_mc, with_field],
+                     sort_keys=True, default=str)
+    hit = st.session_state.get("_design_memo")
+    if hit is not None and hit[0] == sig:
+        return hit[1]
+    r = E.evaluate(typology, geom_kw, mix, proc, jam_ratio=jam_ratio,
+                   n_mc=n_mc, with_field=with_field)
+    st.session_state["_design_memo"] = (sig, r)
+    return r
+
+
 def tab_design(typology, mix, proc, jam_ratio, n_mc):
     geom_kw = geom_controls(typology, mix["d_max"])
     # The Mould tab generates a mould for whatever the Design tab currently shows,
@@ -346,8 +461,7 @@ def tab_design(typology, mix, proc, jam_ratio, n_mc):
         help="Runs the reaction-diffusion solve and draws a mid-plane section.")
 
     with st.spinner("Building geometry and scoring…"):
-        r = E.evaluate(typology, geom_kw, mix, proc, jam_ratio=jam_ratio,
-                       n_mc=n_mc, with_field=show_field)
+        r = _evaluate_memo(typology, geom_kw, mix, proc, jam_ratio, n_mc, show_field)
 
     score_header(r)
     st.markdown("---")
@@ -382,24 +496,32 @@ def tab_design(typology, mix, proc, jam_ratio, n_mc):
     st.markdown("---")
     c1, c2, c3 = st.columns(3)
     mesh = r["_mesh"]
-    stl = io.BytesIO(); mesh.export(stl, file_type="stl"); stl.seek(0)
     tag = f"{typology}_dmax{mix['d_max']:g}_{proc['cure_days']:.0f}d{proc['rh_pct']:.0f}rh_score{r['score']:.3f}"
-    c1.download_button("Download STL", stl, file_name=f"{tag}.stl",
-                       mime="model/stl", width="stretch")
+    # `data` is a callable, so the mesh is only serialised when someone actually
+    # clicks. Every tab body re-runs on every widget interaction, so the eager form
+    # exported a 2-6 MB STL into the media manager on each slider move. Safe here
+    # because the button re-renders on every run — a deferred payload is dropped the
+    # moment its element stops being referenced.
+    if len(mesh.faces) == 0:
+        c1.warning("No solid to export — the geometry sliders leave nothing to mesh.")
+    else:
+        c1.download_button("Download STL", lambda: mesh.export(file_type="stl"),
+                           file_name=f"{tag}.stl", mime="model/stl",
+                           width="stretch", on_click="ignore")
     rec = {k: v for k, v in r.items() if not k.startswith("_")}
     rec.update({"geom": geom_kw, "mix": mix, "proc": proc})
     c2.download_button("Download report (JSON)",
-                       json.dumps(rec, indent=1, default=str),
+                       lambda: json.dumps(rec, indent=1, default=str),
                        file_name=f"{tag}.json", mime="application/json",
-                       width="stretch")
-    if typology == "shell" and proc["split_mould"]:
+                       width="stretch", on_click="ignore")
+    if typology == "shell" and proc["split_mould"] and len(mesh.faces):
         from biocast.grammars import shell as sh
         try:
             lo, up = sh.split_halves(mesh)
-            buf = io.BytesIO(); lo.export(buf, file_type="stl"); buf.seek(0)
-            c3.download_button("Download lower half", buf,
+            c3.download_button("Download lower half",
+                               lambda: lo.export(file_type="stl"),
                                file_name=f"{tag}_lower.stl", mime="model/stl",
-                               width="stretch")
+                               width="stretch", on_click="ignore")
         except Exception as exc:                       # pragma: no cover
             c3.caption(f"half export unavailable: {exc}")
     return r
@@ -457,69 +579,184 @@ def tab_process(mix, proc, jam_ratio):
 
 
 def tab_explore(typology, mix, proc, jam_ratio):
+    st.subheader("Find the shape most likely to cement")
     st.markdown(
-        "Randomised search inside the current mix and cure settings. Each candidate "
-        "is meshed, diagnosed and scored with the same engine as the Design tab.")
-    c1, c2 = st.columns([1, 3])
-    n = c1.select_slider("Candidates", [12, 24, 48, 96], 24)
-    seed = c1.number_input("Seed", 0, 9999, 0, 1)
-    go = c1.button("Search", type="primary", width="stretch")
-    if not go:
-        st.info("Set a count and press **Search**. 24 candidates take roughly half a minute.")
+        "Samples the design space to find a promising basin, then walks downhill "
+        "inside it one parameter at a time. Every candidate is meshed, diagnosed and "
+        "scored by the same engine as the Design tab — the search adds no shortcut "
+        "model. When it finishes you can push the winner straight into the sliders, "
+        "and the **Mould** tab will then build the silicone mould for it.")
+
+    c1, c2, c3, c4 = st.columns([1, 1, 1, 1.4])
+    n = c1.select_slider("Random samples", [12, 24, 48, 96], 48,
+                         help="This stage is where the designs actually come from. "
+                              "Spend budget here first.")
+    n_ref = c2.select_slider("Refinement depth", [0, 1, 2, 3], 1,
+                             help="Compass search: each parameter up and down, the "
+                                  "step halving only when a whole sweep fails. It "
+                                  "confirms a local optimum rather than finding "
+                                  "better designs — measured across all three "
+                                  "typologies it matched the best sampled design "
+                                  "every time and never beat it. Raise it only when "
+                                  "polishing a design you already like.")
+    seed = c3.number_input("Seed", 0, 9999, 0, 1)
+    n_par = len(GEOM_SPACE[typology]) + len(GEOM_CHOICES[typology])
+    total = int(n) + int(n_ref) * n_par * 4 + 1
+    c4.metric("Designs to score", f"≤ {total}",
+              help=f"1 current + {n} random + at most {n_ref} x {n_par} x 4 refining. "
+                   "The refinement stops as soon as it stops improving, so the real "
+                   "count is usually lower.")
+    st.caption(f"Up to about {total * 1.3:.0f} s at roughly 1.3 s per design on two "
+               f"cores. The design currently on the sliders is scored first, so the "
+               f"search can never hand back something worse than what you have.")
+
+    if st.button("Search", type="primary"):
+        prog = st.progress(0.0, text="scoring…")
+        cur = (st.session_state.get("geom_kw", {})
+               if st.session_state.get("geom_kw_typology") == typology else None)
+        with st.spinner("Searching…"):
+            rows = E.search_shapes(
+                typology, GEOM_SPACE[typology], GEOM_CHOICES[typology], derive_geom,
+                mix, proc, jam_ratio=jam_ratio, n_random=int(n), n_refine=int(n_ref),
+                seed=int(seed), start=cur,
+                progress=lambda f, d, t: prog.progress(f, text=f"scored {d}/{t}"))
+        prog.empty()
+        # Same reason the Mould tab holds its result: any widget interaction re-runs
+        # the script with this button False, and a search whose results vanish the
+        # moment you touch anything cannot be acted on.
+        st.session_state["search"] = {
+            "typology": typology, "rows": rows,
+            "settings": {"mix": dict(mix), "proc": dict(proc), "jam": jam_ratio},
+        }
+
+    got = st.session_state.get("search")
+    if not got or got["typology"] != typology:
+        st.info("Press **Search**. Nothing is computed until you do.")
         return
-
-    rng = np.random.default_rng(int(seed))
-    rows, prog = [], st.progress(0.0, text="scoring…")
-    for i in range(int(n)):
-        if typology == "shell":
-            g = dict(a=rng.uniform(40, 90), b=rng.uniform(40, 90), c=rng.uniform(60, 140),
-                     n=rng.uniform(2.0, 4.0), ovoid=rng.uniform(0, 0.45),
-                     wall=rng.uniform(8, 42), aperture_r=rng.uniform(0, 30),
-                     fillet_r=rng.uniform(max(4.0, 1.5*mix["d_max"]), 16))
-        elif typology == "block":
-            g = dict(face_shell=rng.uniform(25, 50), web=rng.uniform(19, 42),
-                     n_cores=int(rng.choice([2, 3])),
-                     fillet_r=rng.uniform(max(4.0, 1.5*mix["d_max"]), 16),
-                     core_taper=rng.uniform(0.5, 4.0))
-        else:
-            g = dict(t=rng.uniform(25, 60), pattern=str(rng.choice(
-                        ["grid", "diagonal", "flower", "radial"])),
-                     groove_depth=rng.uniform(1.5, 8), groove_width=rng.uniform(8, 42),
-                     groove_pitch=rng.uniform(30, 80),
-                     fillet_r=rng.uniform(max(4.0, 1.5*mix["d_max"]), 14),
-                     joint=rng.uniform(3, 12), thick_tile=True)
-        try:
-            r = E.evaluate(typology, g, mix, proc, jam_ratio=jam_ratio, n_mc=150)
-        except Exception:
-            continue
-        rows.append({**{k: (round(v, 2) if isinstance(v, float) else v)
-                        for k, v in g.items()},
-                     "score": round(r["score"], 3),
-                     "lo": round(r["score_lo"], 3), "hi": round(r["score_hi"], 3),
-                     "feasible": r["feasible"],
-                     "limiting": r["dominant_failure_mode"],
-                     "section_mm": round(r["min_section_measured_mm"], 1),
-                     "vol_cm3": round(r["volume_mm3"] / 1000, 1),
-                     "failed": ", ".join(r["failed_rules"])})
-        prog.progress((i + 1) / int(n), text=f"scored {i+1}/{int(n)}")
-    prog.empty()
-
+    rows = got["rows"]
     if not rows:
         st.warning("No candidate built successfully. Try a different typology or mix.")
         return
-    df = pd.DataFrame(rows).sort_values("score", ascending=False).reset_index(drop=True)
-    nf = int(df.feasible.sum())
-    st.write(f"**{nf} of {len(df)} feasible.** Best score {df.score.max():.3f}. "
-             f"Most common limiter: **{df.limiting.mode()[0]}**.")
-    st.dataframe(df, hide_index=True, width="stretch", height=380)
+    if got["settings"] != {"mix": dict(mix), "proc": dict(proc), "jam": jam_ratio}:
+        st.warning("The mix or cure settings have changed since this search ran. "
+                   "Scores below are for the settings it ran under.")
+
+    best = rows[0]
+    nf = sum(1 for r in rows if r["feasible"])
+    st.markdown("#### Best design found")
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Broken rules", int(best["n_fail"]),
+              help="Ranked on this FIRST, then on score. A design that breaks a hard "
+                   "rule cannot be cast at all, so no score should buy its way past "
+                   "one that can — and on score alone the ordering really does invert: "
+                   "an 18 mm-walled vessel breaking two rules outscores a 27 mm one "
+                   "breaking only the aperture rule.")
+    m2.metric("Score", f"{best['score']:.3f}",
+              help=f"5–95 % interval {best['score_lo']:.3f} – {best['score_hi']:.3f}. "
+                   f"Ties on broken rules are settled by the 5th percentile first, "
+                   f"because the intervals are wide and mostly driven by an assumed "
+                   f"biofilm volume fraction — ranking on the median alone promotes "
+                   f"whichever design has the widest interval.")
+    m3.metric("Limited by", SUB_LABEL.get(best["limiting"], best["limiting"]))
+    m4.metric("Cemented fraction", f"{best['cemented_fraction']:.3f}")
+    st.write(f"**{nf} of {len(rows)} feasible.** "
+             + ("" if best["feasible"] else
+                f"**The best design still fails:** {best['failed']}. "))
+
+    keys = list(GEOM_SPACE[typology]) + list(GEOM_CHOICES[typology])
+    st.dataframe(pd.DataFrame([{"parameter": k, "value": (
+        round(best[k], 2) if isinstance(best[k], float) else best[k])} for k in keys]),
+        hide_index=True, width="stretch")
+
+    b1, b2 = st.columns([1, 2])
+    if b1.button("⬅ Use this design", type="primary", width="stretch"):
+        vals = {}
+        for k in keys:
+            v = best[k]
+            if k in GEOM_SPACE[typology]:
+                s = GEOM_SPACE[typology][k]
+                # snap to the slider's own step, or Streamlit rejects the value
+                v = float(np.clip(round(float(v) / s["step"]) * s["step"],
+                                  s["lo"], s["hi"]))
+            vals[k] = v
+        # staged, not written — `geom_controls` applies it on the next run, before the
+        # widgets exist. See its docstring.
+        st.session_state["geom_pending"] = {"typology": typology, "values": vals}
+        st.session_state.pop("mould_record", None)   # it described the old shape
+        st.rerun()
+    b2.caption("Writes these values into the **Design** tab's sliders. The **Mould** "
+               "tab then generates the pattern, the former and the jacket for it.")
+
+    st.markdown("#### Every candidate scored")
+    df = pd.DataFrame(rows)
+    show = keys + ["n_fail", "score", "score_lo", "score_hi", "feasible", "limiting",
+                   "section_mm", "volume_cm3", "failed"]
+    st.dataframe(df[show].round(3), hide_index=True, width="stretch", height=340)
     st.download_button("Download results (CSV)", df.to_csv(index=False),
-                       file_name=f"explore_{typology}.csv", mime="text/csv")
-    if nf and (df[df.feasible].hi - df[df.feasible].lo).median() > 0.4:
+                       file_name=f"search_{typology}.csv", mime="text/csv",
+                       on_click="ignore")
+    fe = df[df.feasible]
+    if len(fe) and (fe.score_hi - fe.score_lo).median() > 0.4:
         st.caption("Median interval among feasible designs exceeds 0.4 — designs whose "
                    "intervals overlap should be treated as tied, not ranked.")
 
 
 # ----------------------------------------------------------------------------- main
+#: What a generated mould was generated FROM. Held beside the result so a stale
+#: result announces itself instead of being read as the current one — the sliders
+#: above it keep moving after the solve, and a mould that no longer matches them is
+#: the single most misleading thing this tab could show.
+def _mould_settings(typology, kind, geom_kw, mix, proc, skin_t, deflect) -> dict:
+    return {"typology": typology, "kind": kind, "geom": dict(geom_kw),
+            "mix": dict(mix), "proc": dict(proc),
+            "skin_t": float(skin_t), "deflect": float(deflect)}
+
+
+#: The two-stage chain, stated as a procedure rather than left to be inferred from a
+#: list of part names. Someone opening a zip of eight STLs cannot tell that three of
+#: them exist only to manufacture a fourth.
+PROCEDURE_MD = """\
+**The silicone path is two castings, not one.** You print a former, cast the rubber
+mould in it, and cast the bio-concrete in the rubber.
+
+1. **Print** `pattern` — a solid positive of the body you designed. This is a
+   sacrificial master, not a part of the mould.
+2. **Print** `pour_shell_lower` + `pour_shell_upper`, seat the pattern inside on the
+   window pillars, clamp shut on the tongue-and-groove rim, and pour
+   **{silicone_mass_g:.0f} g** of silicone in through the spout. The pillars hold the
+   pattern at the {skin_t_mm:.0f} mm skin offset *and* form the breather windows, so
+   the skin demoulds already perforated. — *{pour_procedure}*
+3. **Demould the skin.** That cured rubber is the mould the bio-concrete is cast in.
+4. **Print** `jacket_lower` + `jacket_upper` and clamp the skin inside them — silicone
+   at ~1.1 MPa cannot hold a section against mix pressure. Keep the jacket's windows
+   over the skin's: a window with jacket behind it is not a window.
+5. **Cast the mix**, cure open-faced, then take the jacket off the skin *first* and
+   peel the skin off the cast. The reverse tears the skin.
+"""
+
+#: Per-part one-liners. Keyed on the part name so a part that gains a role but no
+#: explanation shows an empty note rather than a wrong one.
+PART_NOTE = {
+    "pattern": "the sacrificial master — print it, pour silicone around it, discard",
+    "pour_shell_lower": "the former you pour silicone into (lower half)",
+    "pour_shell_upper": "the former you pour silicone into (upper half)",
+    "parting_plate": "the wall between the two skin halves; lift it out over the "
+                     "pattern before opening the lower half",
+    "jacket_lower": "carries mix pressure; draft lives here, not on the cast",
+    "jacket_upper": "carries mix pressure; draft lives here, not on the cast",
+    "skin": "THE MOULD — cast this in rubber, do not print it",
+    "skin_lower": "THE MOULD, lower half — cast this in rubber, do not print it",
+    "skin_upper": "THE MOULD, upper half — cast this in rubber, do not print it",
+    "skin_core_lining": "rubber lining of the hollow core; squeezed out through the "
+                        "cast's aperture, not peeled",
+    "core": "rigid backing behind the core lining",
+    "lower": "mould half; cure it open-faced",
+    "upper": "mould half; cure it open-faced",
+    "core_lo": "loose core, withdrawn from the lower half",
+    "core_up": "loose core, withdrawn from the upper half",
+}
+
+
 def tab_mould(typology, mix, proc, jam_ratio):
     """Generate a printable mould for the current design and show its verification.
 
@@ -557,23 +794,53 @@ def tab_mould(typology, mix, proc, jam_ratio):
         "A mould solve is heavier than a design score. Measured on two cores (what a "
         "basic hosted container gives you): **rigid ~15 s, silicone ~2-3 min**, "
         "because the silicone path runs an oxygen field solve per boundary condition "
-        "and again per candidate window pitch. It is faster on a workstation.")
-    if not st.button(f"Generate {kind} mould", type="primary"):
-        return
+        "and again per candidate window pitch. It is faster on a workstation. Meshing "
+        "every part adds ~10-30 s and runs in the same click, so the STL download is "
+        "ready as soon as the numbers are.")
 
     # Fall back to the grammar defaults rather than another typology's parameters:
     # geom_controls only runs when the Design tab renders, and passing a shell's
     # `wall` to a tile would either raise or silently build the wrong body.
     geom_kw = (st.session_state.get("geom_kw", {})
                if st.session_state.get("geom_kw_typology") == typology else {})
-    if not geom_kw:
-        st.info("Using the grammar's default parameters — open the **Design** tab "
-                "first to mould the shape you have dialled in.")
 
-    with st.spinner("Generating and verifying every part…"):
-        res = E.generate_mould(typology, geom_kw, mix, proc, kind=kind,
-                               skin_t=skin_t, deflect_target_mm=deflect)
-    s = res["summary"]
+    # WHY THE RESULT IS STORED RATHER THAN RENDERED INLINE.
+    #
+    # Streamlit re-runs the entire script on every widget interaction, and a button
+    # reads True only on the run that follows its own click. The previous version
+    # guarded this whole tab with `if not st.button("Generate"): return`, so the FIRST
+    # thing a user did after generating — clicking "Prepare printable STLs", or the
+    # download button itself — re-ran the script with the generate button False and
+    # returned before reaching any of it. The tab emptied and no STL could ever be
+    # obtained. Everything below therefore renders from `st.session_state`, and the
+    # button only writes to it.
+    want = _mould_settings(typology, kind, geom_kw, mix, proc, skin_t, deflect)
+    if st.button(f"Generate {kind} mould", type="primary"):
+        if not geom_kw:
+            st.info("Using the grammar's default parameters — open the **Design** tab "
+                    "first to mould the shape you have dialled in.")
+        box = st.empty()
+        with st.spinner("Generating, verifying and meshing every part…"):
+            rec = E.mould_record(typology, geom_kw, mix, proc, kind=kind,
+                                 skin_t=skin_t, deflect_target_mm=deflect,
+                                 progress=lambda m: box.caption(m))
+        box.empty()
+        rec["settings"] = want
+        st.session_state["mould_record"] = rec
+
+    rec = st.session_state.get("mould_record")
+    if rec is None:
+        st.info("Nothing is computed until you press **Generate** — a mould solve is "
+                "too heavy to run on every slider move.")
+        return
+    if rec["settings"] != want:
+        st.warning(
+            f"Showing the **{rec['settings']['kind']} {rec['settings']['typology']}** "
+            f"mould generated earlier. The settings above have changed since — press "
+            f"**Generate {kind} mould** to rebuild for the current ones. The download "
+            f"below is still the older mould.")
+    kind, typology = rec["kind"], rec["typology"]
+    s = rec["summary"]
     if s["pitch_coarsened"]:
         st.info(
             f"Generated at **{s['pitch_mm']:.2f} mm voxel pitch** — {s['pitch_reason']}. "
@@ -608,7 +875,7 @@ def tab_mould(typology, mix, proc, jam_ratio):
              "open area": None,
              "cemented fraction": s["cemented_frac_rigid_baseline"]},
         ])
-        st.dataframe(a, hide_index=True, use_container_width=True,
+        st.dataframe(a, hide_index=True, width="stretch",
                      column_config={
                          "open area": st.column_config.NumberColumn(format="%.3f"),
                          "cemented fraction": st.column_config.NumberColumn(
@@ -626,7 +893,7 @@ def tab_mould(typology, mix, proc, jam_ratio):
                 f"More open area will not fix a drying limit — change the cure "
                 f"(lower RH is the strongest lever) or cast open-faced.")
     else:
-        a = E.mould_aeration(proc, mould_res=res)
+        a = rec["aeration"]
         st.dataframe(pd.DataFrame([
             {"boundary condition": "demoulded body (reference)",
              "cemented fraction": a["demoulded"]["cemented_fraction"]},
@@ -634,7 +901,7 @@ def tab_mould(typology, mix, proc, jam_ratio):
              "cemented fraction": a["enclosed"]["cemented_fraction"]},
             {"boundary condition": "split mould, parting face open",
              "cemented fraction": a["open_faces_only"]["cemented_fraction"]},
-        ]), hide_index=True, use_container_width=True,
+        ]), hide_index=True, width="stretch",
             column_config={"cemented fraction":
                            st.column_config.NumberColumn(format="%.3f")})
         st.caption(
@@ -642,9 +909,10 @@ def tab_mould(typology, mix, proc, jam_ratio):
             f"what makes the difference — assembling them early converts the parting "
             f"face from an oxygen source into a sealed interface and reproduces the "
             f"source paper's solid-cast failure. Drained depth L_dry = "
-            f"{a['L_dry_mm']:.1f} mm at {proc['cure_days']:.0f} d / "
-            f"{proc['rh_pct']:.0f} % RH. These are drained-depth values, not the "
-            f"field solve.")
+            f"{a['L_dry_mm']:.1f} mm at "
+            f"{rec['settings']['proc']['cure_days']:.0f} d / "
+            f"{rec['settings']['proc']['rh_pct']:.0f} % RH — the cure this mould was "
+            f"generated for. These are drained-depth values, not the field solve.")
 
     # ---- decisions and verification ----------------------------------------
     st.markdown("#### What the generator decided")
@@ -677,7 +945,35 @@ def tab_mould(typology, mix, proc, jam_ratio):
                     f"worst {s['worst_undercut_strain_pct']:.1f} % vs "
                     f"{s['allowable_strain_pct']:.1f} % allowable"),
                    ("jacket stiff enough perforated", s["jacket_adequate"], ""),
-                   ("pour shell can be filled", s["pour_shell_pourable"], "")]
+                   ("former: spout and vent reach every cavity",
+                    s["pour_shell_reaches_cavity"],
+                    f"measured intersection per cavity body, and no material taken "
+                    f"from the far half — spout {s['spout_d_mm']:.0f} mm, vent "
+                    f"{s['vent_d_mm']:.0f} mm"),
+                   ("former: casts the skin that was SCORED",
+                    s["cavity_matches_skin"]["ok"],
+                    f"cavity {s['cavity_matches_skin']['cavity_outer_mm3']/1000:.0f} "
+                    f"vs windowed skin "
+                    f"{s['cavity_matches_skin']['skin_out_mm3']/1000:.0f} cm3 "
+                    f"(ratio {s['cavity_matches_skin']['ratio']:.3f})"),
+                   ("former: window pillars bridge wall to pattern",
+                    s["pillars"]["ok"],
+                    f"{s['pillars']['formed_vol_frac']*100:.0f} % of bore volume "
+                    f"forms a pillar ({s['pillars']['n']} of "
+                    f"{s['pillars']['n_raw']} bodies); halves in "
+                    f"{s['pillars']['bodies_lower']}/{s['pillars']['bodies_upper']} "
+                    f"pieces"),
+                   ("former: both halves open off the cured skin",
+                    s["pour_shell_release_ok"],
+                    "straight-pull sweep against the as-cast skin, and the control "
+                    "against an unperforated one does interfere: "
+                    f"{s['pour_shell_control_interferes']}"),
+                   ("former: wall meets the deflection target",
+                    s["pour_shell_wall_ok"],
+                    f"{s['pour_shell_wall_mm']:.0f} mm, "
+                    f"{s['pour_shell_deflection_mm']:.3f} mm under the silicone head"),
+                   ("former: volume balance closes", s["pour_shell_balance_exact"],
+                    "")]
     else:
         checks += [("mould wall meets deflection target", s["wall_meets_target"],
                     f"{s['wall_deflection_mm']:.3f} mm at the design pressure"),
@@ -685,77 +981,68 @@ def tab_mould(typology, mix, proc, jam_ratio):
                     "tested against the flange's measured symmetry group")]
     st.dataframe(pd.DataFrame([{"check": c, "pass": bool(p), "detail": n}
                                for c, p, n in checks]),
-                 hide_index=True, use_container_width=True)
+                 hide_index=True, width="stretch")
 
     st.markdown("#### Parts and downloads")
-    roles = {p: E.PART_ROLE.get(p, "print") for p in s["parts"]}
-    n_print = sum(1 for r in roles.values() if r == "print")
-    st.dataframe(pd.DataFrame(
-        [{"part": p,
-          "you": "3D print" if r == "print" else "cast in silicone",
-          "note": ("the former you pour silicone into" if p.startswith("pour_shell")
-                   else "carries mix pressure; draft lives here"
-                   if p.startswith("jacket")
-                   else "the flexible part — do NOT print this"
-                   if r == "cast_silicone" else "")}
-         for p, r in roles.items()]),
-        hide_index=True, use_container_width=True)
-
+    if not rec["manufacturable"]:
+        st.error(
+            "**This former has not passed its own manufacturability checks**, so the "
+            "files below describe an assembly the generator has measured as unbuildable"
+            ":\n\n" + "\n".join(f"- {b}" for b in rec["blockers"]) +
+            "\n\nThe download is still offered — the parts are real geometry and you "
+            "may want them anyway — but printing the pattern, the former and the "
+            "jacket is many hours and several hundred grams of filament.")
     if kind == "silicone":
-        st.caption(
-            "Two families are printed and one is cast. **The skin is not a printable "
-            "part** — a rigid copy of it fits the jacket and releases nothing. Print "
-            "the pour shell, cast the skin in it, print the jacket.")
+        st.markdown(PROCEDURE_MD.format(**s))
+        pil = s["pillars"]
+        if pil["open_area_formed_frac"] < 0.98:
+            st.warning(
+                f"**The former casts {pil['open_area_formed_frac']*100:.0f} % of the "
+                f"designed window area.** Only bores running along the draw can be "
+                f"formed — a peg across the pull shears through the cured rubber when "
+                f"the halves open — so the transverse windows, and the fill gate, have "
+                f"to be punched by hand to `skin*.stl`. **The cemented fraction above "
+                f"was solved on the full window set**, so treat it as the figure for a "
+                f"skin whose remaining windows have been punched, not for one straight "
+                f"out of the former."
+                + (" The hollow core's lining is cast unperforated for the same "
+                   "reason — a pillar inside the silhouette has no former wall to "
+                   "attach to — and its windows are hand-punched too."
+                   if s["cavity_matches_skin"]["core_lining_windows_unformed"] else ""))
+    st.dataframe(pd.DataFrame(
+        [{"part": p["part"],
+          "you": "3D print" if p["role"] == "print" else "cast in silicone",
+          "note": PART_NOTE.get(p["part"],
+                                "the flexible part — do NOT print this"
+                                if p["role"] == "cast_silicone" else "")}
+         for p in rec["parts"]]),
+        hide_index=True, width="stretch")
 
     c1, c2 = st.columns(2)
     with c1:
-        if st.button(f"Prepare printable STLs ({n_print} parts)"):
-            with st.spinner("Meshing parts — marching cubes on every one…"):
-                blob, man = E.mould_stl_bundle(res, prefix=f"{kind}_{typology}",
-                                              roles=("print",))
-            st.session_state[f"stl_{kind}_{typology}"] = (blob, man)
-        key = f"stl_{kind}_{typology}"
-        if key in st.session_state:
-            blob, man = st.session_state[key]
-            st.download_button(
-                f"Download printable STLs ({len(blob)/1e6:.0f} MB)", blob,
-                file_name=f"mould_{kind}_{typology}_printable.zip",
-                mime="application/zip", type="primary")
-            st.caption("Includes MANIFEST.txt with the fabrication order, the "
-                       "open-faced cure requirement, and the disassembly order.")
-            st.dataframe(pd.DataFrame(man)[["file","volume_cm3","bbox_mm"]],
-                         hide_index=True, use_container_width=True)
+        st.download_button(
+            f"⬇ Download all {rec['n_files']} STLs "
+            f"({len(rec['zip'])/1e6:.1f} MB zip)", rec["zip"],
+            file_name=rec["zip_name"], mime="application/zip", type="primary",
+            width="stretch", on_click="ignore")
+        st.caption(
+            f"**{rec['n_print']} files to print** in `{E.ROLE_DIR['print']}/`"
+            + (f", **{rec['n_cast']} to cast in silicone** in "
+               f"`{E.ROLE_DIR['cast_silicone']}/`" if rec["n_cast"] else "")
+            + ". MANIFEST.txt carries the fabrication order, the open-faced cure "
+              "requirement and the disassembly order.")
     with c2:
-        if kind == "silicone" and st.button("Prepare silicone parts too (reference)"):
-            with st.spinner("Meshing the cast parts…"):
-                blob2, man2 = E.mould_stl_bundle(res, prefix=f"{kind}_{typology}",
-                                                roles=("print", "cast_silicone"))
-            st.download_button(
-                f"Download all parts ({len(blob2)/1e6:.0f} MB)", blob2,
-                file_name=f"mould_{kind}_{typology}_all.zip", mime="application/zip")
-            st.caption("The skin meshes are for checking fit and estimating rubber "
-                       "volume — not for printing.")
         st.download_button("Decisions + verification (JSON)",
-                           json.dumps(_jsonable(s), indent=1),
-                           file_name=f"mould_{kind}_{typology}.json",
-                           mime="application/json")
-    st.caption(
-        "Meshing is deferred to this button because it is the expensive step and "
-        "most sessions only want the numbers. The full set for all typologies is "
-        "`PYTHONPATH=. python examples/regenerate_moulds.py`.")
-
-
-def _jsonable(o):
-    """Strip numpy scalars and arrays so the summary serialises."""
-    if isinstance(o, dict):
-        return {k: _jsonable(v) for k, v in o.items()}
-    if isinstance(o, (list, tuple)):
-        return [_jsonable(v) for v in o]
-    if isinstance(o, np.generic):
-        return o.item()
-    if isinstance(o, np.ndarray):
-        return f"<array shape={o.shape}>"
-    return o
+                           lambda: json.dumps(s, indent=1, default=str),
+                           file_name=rec["zip_name"].replace(".zip", ".json"),
+                           mime="application/json", width="stretch",
+                           on_click="ignore")
+        st.caption(
+            "Every number on this page, at full precision. The whole set for all "
+            "three typologies is `PYTHONPATH=. python examples/regenerate_moulds.py`.")
+    st.dataframe(pd.DataFrame(rec["manifest"])[
+        ["file", "role", "volume_cm3", "watertight", "bbox_mm"]],
+        hide_index=True, width="stretch")
 
 
 def main():
