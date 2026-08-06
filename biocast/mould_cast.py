@@ -87,7 +87,8 @@ class CastSpec:
 # --------------------------------------------------------------------------
 # Silhouettes and prisms
 # --------------------------------------------------------------------------
-def silhouette(mesh: trimesh.Trimesh, z: float | None = None) -> Polygon:
+def silhouette(mesh: trimesh.Trimesh, z: float | None = None,
+               smooth: float = 1.5) -> Polygon:
     """The part's shadow on XY, or its cross-section at height `z`.
 
     A section is used for the flange rather than the full shadow, because the shadow
@@ -100,10 +101,10 @@ def silhouette(mesh: trimesh.Trimesh, z: float | None = None) -> Polygon:
     else:
         sec = mesh.section(plane_origin=[0, 0, z], plane_normal=[0, 0, 1])
         if sec is None:
-            return silhouette(mesh)
+            return silhouette(mesh, smooth=smooth)
         polys = sec.to_planar()[0].polygons_full
     if not len(polys):
-        return silhouette(mesh) if z is not None else Polygon()
+        return silhouette(mesh, smooth=smooth) if z is not None else Polygon()
     u = unary_union(list(polys))
     if u.geom_type == "MultiPolygon":
         # A section can legitimately be several islands — the block's cores, a tile's
@@ -111,6 +112,17 @@ def silhouette(mesh: trimesh.Trimesh, z: float | None = None) -> Polygon:
         # largest island wins and the rest are holes in it once offset. Taking the
         # union straight to `extrude_polygon` raises, which is how this surfaced.
         u = max(u.geoms, key=lambda g: g.area)
+    # DE-STAIRCASE. The grammars mesh a voxel field, so this outline is the shadow of
+    # a marching-cubes surface and carries a stair-step at every voxel — which is what
+    # made the tooling rims look chewed. A morphological close at the voxel scale
+    # removes the steps without moving the outline, and simplifying at a third of a
+    # voxel drops the vertices they left behind. `smooth` is the pitch; at 2 mm this
+    # takes a vessel outline from ~1400 vertices to ~90.
+    if smooth > 0 and not u.is_empty:
+        u = (u.buffer(smooth, resolution=SEG).buffer(-smooth, resolution=SEG)
+              .simplify(smooth / 3.0))
+        if u.geom_type == "MultiPolygon":
+            u = max(u.geoms, key=lambda g: g.area)
     return u
 
 
@@ -215,10 +227,16 @@ def apply_draft(mesh: trimesh.Trimesh, axis: int, plane: float,
         return mesh
     m = mesh.copy()
     span = float(m.bounds[1][axis] - m.bounds[0][axis])
-    while m.edges_unique_length.max() > max(span / 24.0, 1.0):
-        m = m.subdivide()
-        if len(m.faces) > 400_000:      # refinement is a means, not an end
+    # Refinement is a means, not an end: it exists so a long flat face gains
+    # intermediate vertices to taper. A marching-cubes mesh already has an edge every
+    # voxel, so this normally does nothing — but on the tile's large flat faces it ran
+    # four times and turned 56 k triangles into 224 k, which is where the 11 MB STLs
+    # and the "why is this so complicated" came from.
+    budget = min(4 * len(m.faces), 120_000)
+    while m.edges_unique_length.max() > max(span / 12.0, 2.0):
+        if len(m.faces) * 4 > budget:
             break
+        m = m.subdivide()
 
     lat = [i for i in range(3) if i != axis]
     v = m.vertices.copy()
@@ -394,12 +412,18 @@ def frustum_keys(poly: Polygon, plane: float, inner: float, ring: float,
         xy = ring_point(poly, ang, inner, ring)
         if xy is None:
             continue
-        for out, rad in ((pegs, spec.key_d / 2),
-                         (sockets, spec.key_d / 2 + spec.clearance)):
-            out.append(trimesh.creation.cone(
-                radius=rad, height=h, sections=24,
-                transform=trimesh.transformations.translation_matrix(
-                    [xy[0], xy[1], plane])))
+        for out, rad, extra in ((pegs, spec.key_d / 2, 0.0),
+                                (sockets, spec.key_d / 2 + spec.clearance,
+                                 spec.clearance)):
+            # A FRUSTUM, not a cone. A sharp apex is a needle: it prints badly, it
+            # locates nothing once the tip rounds over, and it reads as a spike in
+            # every render. Cut at 60 % of the height, so the taper still self-centres
+            # the halves as they close but lands on a flat.
+            k = trimesh.creation.cone(radius=rad, height=h / 0.6, sections=24)
+            k = k.slice_plane(plane_origin=[0, 0, h + extra],
+                              plane_normal=[0, 0, -1], cap=True)
+            k.apply_translation([xy[0], xy[1], plane])
+            out.append(k)
     return (trimesh.util.concatenate(pegs) if pegs else None,
             trimesh.util.concatenate(sockets) if sockets else None)
 
