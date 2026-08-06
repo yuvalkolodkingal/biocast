@@ -129,6 +129,29 @@ jobs:
           print(f"ok: {len(man)} parts, {len(blob)/1e6:.1f} MB zip")
           PY
 
+      - name: Smoke test — every tab's entry point exists and runs
+        # This one exists because a refactor deleted `search_shapes` and
+        # `rank_design` outright — an anchor-based cut ran past its intended end —
+        # and it reached the live Space. Importing app.py does NOT catch that: the
+        # call is inside `tab_explore`, which only runs when someone opens the tab.
+        # So call each tab's entry point for real, cheaply.
+        run: |
+          PYTHONPATH=. python - <<'PY'
+          from biocast.gui import engine as E
+          from biocast.gui.app import GEOM_SPACE, GEOM_CHOICES, derive_geom
+          for name in ("evaluate", "search_shapes", "rank_design", "mould_record",
+                       "generate_mould", "mould_stl_bundle", "bundled_mesh",
+                       "feasible_window", "min_cure_to_open", "max_dmax_to_open"):
+              assert hasattr(E, name), f"engine.{name} is missing"
+          rows = E.search_shapes("shell", GEOM_SPACE["shell"], GEOM_CHOICES["shell"],
+                                 derive_geom, {"d_max": 4.0},
+                                 {"cure_days": 21.0, "rh_pct": 85.0},
+                                 n_random=3, n_refine=0, n_mc=16)
+          assert rows and "n_fail" in rows[0], "search returned nothing usable"
+          assert E.feasible_window(4.0, 21.0, 85.0)["floor_mm"] > 0
+          print(f"ok: Explore searched {len(rows)}, best score {rows[0]['score']:.3f}")
+          PY
+
       - name: Verify the upload set
         # Cheap guard on the IGNORE list: if a virtualenv, a mesh dump or docs/ ever
         # slips past it, this prints it in the log before 10k files reach the Hub.

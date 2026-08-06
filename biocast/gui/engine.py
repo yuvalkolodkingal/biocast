@@ -488,6 +488,162 @@ def _bundle_readme(res: dict, manifest: list, prefix: str) -> str:
     return "\n".join(L)
 
 
+def rank_design(r: dict) -> tuple:
+    """Sort key for candidate designs, best last (use `reverse=True` to list best first).
+
+    Lexicographic and feasibility-first. A design that breaks a hard rule cannot be
+    cast at all, so no score should be able to buy its way past one that can — and on
+    score alone the ordering really does invert. See `search_shapes` for the measured
+    case: an 18 mm-walled vessel breaking two rules outranked a 27 mm one breaking one.
+    """
+    return (-int(r.get("n_fail", 0)), float(r.get("score_lo", 0.0)),
+            float(r.get("score", 0.0)))
+
+
+def search_shapes(typology: str, space: dict, choices: dict, derive,
+                  mix_kw: dict, proc_kw: dict, *, jam_ratio: float = JAM_RATIO_LIT,
+                  n_random: int = 24, n_refine: int = 2, seed: int = 0,
+                  n_mc: int = 150, start: dict | None = None,
+                  progress=None) -> list:
+    """Find the design most likely to cement, by sampling then refining.
+
+    Random search alone is a poor optimiser in eight dimensions, and it was what the
+    Explore tab did: 24 draws over a box that big lands nowhere near a peak, and
+    doubling the draws buys almost nothing. What it is good at is finding a BASIN,
+    because the scoring surface here is not smooth — `feasible` is a step, and the
+    dominant failure mode switches discontinuously as the section crosses the jamming
+    floor or the drying ceiling.
+
+    So: sample to find the basin, then walk downhill inside it. The refinement is a
+    COMPASS SEARCH — try each parameter up and down at the current step, accept the
+    first improvement, and halve the step only when a whole sweep fails to find one.
+    It needs no gradient (there isn't one to have) and cannot cross a feasibility
+    boundary blindly, because every trial point is scored by the same `evaluate` as
+    everything else.
+
+    HOW MUCH THE REFINEMENT ACTUALLY BUYS: on the evidence so far, nothing. Measured
+    across all three typologies at 24 samples and 2 levels, the refined design equalled
+    the best sampled one every time — the sampling finds the design and the compass
+    search only confirms it is a local optimum for single-parameter moves. Dropping the
+    first step from 25 % of each range to 10 % did not change that either. It is kept
+    because confirming a local optimum is worth something, and because it is the only
+    stage that can improve on a hand-tuned `start`; it is not kept because it has been
+    shown to find better designs. Spend the budget on samples first.
+
+    `start` is scored first and seeds the refinement if it beats every random draw, so
+    a search can never return something worse than the design already on the sliders.
+
+    RANKING IS LEXICOGRAPHIC: fewest broken hard rules first, then `score_lo`, then
+    the median. Feasibility has to lead, and ranking on score alone gets it backwards
+    in a way that is easy to miss. Measured on the vessel at d_max = 4 mm: an 18 mm
+    wall scores `score_lo` 0.207 while breaking TWO rules (the section and the aperture
+    are both under the 24 mm jamming floor); a 27 mm wall breaks only the aperture rule
+    and scores `score_lo` 0.000 with a median of 0.296. On score alone the search
+    parks on the 18 mm design and every refinement step is rejected — which is exactly
+    what it did, twice, gaining nothing across 52 evaluations. `-n_fail` gives it the
+    gradient it was missing: 2 broken rules to 1 to none.
+
+    The 5th percentile leads the tiebreak rather than the median because the intervals
+    here are wide and driven mostly by an assumed biofilm volume fraction, so ranking
+    on the median promotes whichever design happens to have the widest interval. It
+    collapses to 0.000 for plenty of sound designs, and the median then does the
+    discriminating — which is the honest outcome, not a workaround.
+
+    Returns every candidate scored, best first.
+    """
+    rng = np.random.default_rng(int(seed))
+    names = list(space)
+    rows, seen = [], set()
+
+    def _score(g):
+        key = tuple(round(float(g[k]), 4) if isinstance(g[k], (int, float)) else g[k]
+                    for k in sorted(g))
+        if key in seen:
+            return None
+        seen.add(key)
+        try:
+            r = evaluate(typology, derive(typology, g), mix_kw, proc_kw,
+                         jam_ratio=jam_ratio, n_mc=n_mc)
+        except Exception:
+            return None
+        row = {**g, "score": r["score"], "score_lo": r["score_lo"],
+               "score_hi": r["score_hi"], "feasible": r["feasible"],
+               "n_fail": r["n_fail"], "limiting": r["dominant_failure_mode"],
+               "section_mm": r["min_section_measured_mm"],
+               "volume_cm3": r["volume_mm3"] / 1000.0,
+               "cemented_fraction": r["cemented_fraction"],
+               "failed": ", ".join(r["failed_rules"])}
+        rows.append(row)
+        return row
+
+    all_names = names + list(choices)
+    budget = int(n_refine) * len(all_names) * 4     # ceiling, not a target
+    total = int(n_random) + budget + (1 if start else 0)
+    done = 0
+
+    def _tick():
+        nonlocal done
+        done += 1
+        if progress:
+            progress(min(done / max(total, 1), 1.0), done, total)
+
+    # Only if it covers every searched parameter: a partial start would be scored with
+    # dataclass defaults filling the gaps, and could then be picked as `best` — whose
+    # missing keys the refinement's `cur` would immediately fail on.
+    if start and all(k in start for k in all_names):
+        _score({k: start[k] for k in all_names})
+        _tick()
+    for _ in range(int(n_random)):
+        g = {k: float(rng.uniform(s["lo"], s["hi"])) for k, s in space.items()}
+        for k, opts in choices.items():
+            g[k] = opts[int(rng.integers(len(opts)))]
+        _score(g)
+        _tick()
+
+    if not rows:
+        return []
+    best = max(rows, key=rank_design)
+    cur = {k: best[k] for k in all_names}
+
+    # The first step is 10 % of each range, not 25 %. A quarter of the range is a leap,
+    # not a probe: 24 random draws already land somewhere reasonable, and from there
+    # every quarter-range move was rejected on all three typologies, so the whole
+    # budget went on shrinking rather than on improving.
+    used, frac, frac_min = 0, 0.10, 0.10 / (2 ** (int(n_refine) + 2))
+    while frac >= frac_min and used < budget:
+        improved = False
+        for k in choices:                     # discrete: enumerate, do not perturb
+            for opt in choices[k]:
+                if opt == cur[k] or used >= budget:
+                    continue
+                r = _score({**cur, k: opt})
+                used += 1
+                _tick()
+                if r and rank_design(r) > rank_design(best):
+                    best, cur = r, {kk: r[kk] for kk in all_names}
+                    improved = True
+        for k in names:
+            s = space[k]
+            step = frac * (s["hi"] - s["lo"])
+            for sign in (+1, -1):
+                if used >= budget:
+                    break
+                trial = dict(cur)
+                trial[k] = float(np.clip(cur[k] + sign * step, s["lo"], s["hi"]))
+                r = _score(trial)
+                used += 1
+                _tick()
+                if r and rank_design(r) > rank_design(best):
+                    best, cur = r, {kk: r[kk] for kk in all_names}
+                    improved = True
+                    break                     # move on; this direction paid off
+        if not improved:
+            frac /= 2.0                       # only shrink when a full sweep fails
+
+    rows.sort(key=rank_design, reverse=True)
+    return rows
+
+
 def feasible_window(d_max: float, cure_days: float, rh_pct: float,
                     jam_ratio: float = JAM_RATIO_LIT) -> dict:
     """The castability floor and drying ceiling on section thickness.
