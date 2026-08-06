@@ -124,16 +124,33 @@ def main() -> None:
         path_or_fileobj=str(ROOT / "deploy" / "space_README.md")))
     # `.gitattributes` is Hub-generated LFS config that does not exist in this
     # repository; deleting it would strip the Space's LFS tracking.
+    #
+    # PRUNING IS BEST-EFFORT, because listing needs a permission publishing does not.
+    # A Trusted-Publisher token is scoped to write this one Space and cannot READ the
+    # file tree of a private one: `list_repo_files` returns 401 while `create_commit`
+    # on the same repo with the same token succeeds. Deleting stale files is worth
+    # having and is not worth failing a deploy over, so a listing failure downgrades
+    # to an add-only push and says so loudly enough to act on.
     keep = {op.path_in_repo for op in ops} | {".gitattributes"}
-    stale = [p for p in api.list_repo_files(args.repo, repo_type="space")
-             if p not in keep]
-    ops += [CommitOperationDelete(path_in_repo=p) for p in stale]
+    try:
+        stale = [p for p in api.list_repo_files(args.repo, repo_type="space")
+                 if p not in keep]
+    except Exception as exc:
+        stale, pruned = [], False
+        print(f"WARNING: cannot list the Space, so nothing stale can be pruned "
+              f"({type(exc).__name__}). This push only ADDS. A file removed from git "
+              f"stays on the Space, where Python will still import it. Prune with a "
+              f"personal token: python deploy/push_space.py --repo {args.repo}")
+    else:
+        pruned = True
+        ops += [CommitOperationDelete(path_in_repo=p) for p in stale]
 
     api.create_commit(repo_id=args.repo, repo_type="space", operations=ops,
                       commit_message="deploy design studio")
     print(f"pushed {len(ops) - len(stale)} files"
           + (f", removed {len(stale)}: {', '.join(sorted(stale)[:6])}"
-             + ("…" if len(stale) > 6 else "") if stale else ""))
+             + ("…" if len(stale) > 6 else "") if stale else
+             ("" if pruned else " (add-only)")))
     print(f"build logs: https://huggingface.co/spaces/{args.repo}?logs=build")
 
 
