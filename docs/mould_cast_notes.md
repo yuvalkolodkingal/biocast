@@ -146,6 +146,21 @@ guarantee:
 | every part is watertight | a boolean produced a non-manifold result |
 | windows meet the aeration criterion | the limit is drying depth, not open area |
 | window bore clears the clog band | a bore under 2 × d_max self-dams |
+| **the fill port opens into rubber** | a port on the plan centroid misses an annular gap |
+| **the cast skin is one piece** | the window pillars severed the rubber |
+| the halves do not overlap | a mis-signed boolean gave both the same material |
+
+The last three were added after the port check caught a real failure. **The fill port
+is placed by measurement, not by construction**: candidate positions come from the
+pole of inaccessibility of the gap's own cross-section at several heights, and each is
+scored by the volume of rubber its actual bore opens into. Ranking on realised
+intersection is the only thing that works, and both failure modes were measured — a
+port on the plan centroid opens into the vessel's aperture bore and touches **0.0 cm³**
+of rubber, and a pole of inaccessibility taken on the wrong section still missed on the
+block, on a 53 517 mm² section that looked perfectly healthy. Both now open ~4.6–4.9 cm³.
+
+The check has a discrimination control: forcing the plan-centroid placement makes it
+fail on both the vessel and the block, so a pass is evidence rather than decoration.
 
 ## 7. What this record does not cover
 
@@ -154,9 +169,10 @@ guarantee:
   vertical prism around a curved body holds more rubber than a conformal skin: the
   vessel is 906 g here against 316 g for the old conformal offset. That is the price
   of tooling that opens, and it is a real price — see §13 of the old record.
-- **Coverage is not re-solved on the formed window set.** The pitch is chosen on the
-  full lattice; pillars are restricted to the draw axis, so the skin gets fewer
-  windows than the ladder assumed. The gap is not currently quantified.
+- **Marching-cubes stair-steps.** The grammars mesh a voxel field, so every part
+  inherits a step at every voxel on the cavity wall. The silhouette is de-staircased
+  but the cavity surface is not; fixing it means smoothing the design mesh before CSG
+  or meshing the field finer, and both change the cast geometry slightly.
 - **The silicone mechanicals are supplier values** for named grades, not
   measurements on the rubber this team would buy, and none were measured after
   28 days in an alkaline urea/CaCl₂ solution.

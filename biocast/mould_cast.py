@@ -390,6 +390,62 @@ def size_windows(occ: np.ndarray, origin, pitch: float, axis: int,
             "note": "chosen on the drained-depth surrogate, not the field solve"}
 
 
+def fill_port(gap: trimesh.Trimesh, z_hi: float, st: float,
+              d: float = 14.0, depth: float = 36.0) -> tuple:
+    """Where to put the spout so it opens into the rubber. VERIFIED, not assumed.
+
+    Candidates come from sections of the silicone gap at several heights — the pole of
+    inaccessibility of each (the point furthest from any edge of the rubber, which is
+    the most forgiving place to aim a nozzle) plus its representative point — and each
+    is then SCORED by the volume of rubber its actual bore would open into. The best
+    wins, and the score travels with it.
+
+    Ranking on realised intersection rather than trusting the geometry is the only
+    thing that works here, and both failure modes were measured. A port on the plan
+    centroid opens into the vessel's aperture bore and touches no rubber at all
+    (0.0 cm3). And a pole of inaccessibility computed on the wrong section can land
+    somewhere the bore still misses — that is what the block did, on a 53 517 mm2
+    section that looked perfectly healthy.
+
+    Returns `(xy, opened_mm3)`. A zero volume means there was nothing to aim at, and
+    the caller reports the port as unreachable rather than pretending.
+    """
+    from shapely.ops import polylabel
+
+    cand = []
+    for frac in (0.35, 0.6, 0.15, 0.85, -0.25, -0.6):
+        z = z_hi + st * frac
+        sec = gap.section(plane_origin=[0, 0, z], plane_normal=[0, 0, 1])
+        if sec is None:
+            continue
+        try:
+            polys = sec.to_planar()[0].polygons_full
+        except Exception:
+            continue
+        for poly in sorted(polys, key=lambda g: -g.area)[:2]:
+            try:
+                p = polylabel(poly, tolerance=0.5)
+                cand.append((float(p.x), float(p.y)))
+            except Exception:
+                pass
+            r = poly.representative_point()
+            cand.append((float(r.x), float(r.y)))
+
+    best, best_v = (float(gap.centroid[0]), float(gap.centroid[1])), 0.0
+    for xy in cand:
+        bore = trimesh.creation.cylinder(
+            radius=d / 2, height=depth, sections=20,
+            transform=trimesh.transformations.translation_matrix(
+                [xy[0], xy[1], z_hi + st - depth / 2 + 2.0]))
+        try:
+            v = float(trimesh.boolean.intersection([bore, gap]).volume)
+        except Exception:
+            v = 0.0
+        if v > best_v:
+            best, best_v = xy, v
+    return best, best_v
+
+
 def window_pillars(poly: Polygon, d: float, spacing: float,
                    z0: float, z1: float) -> trimesh.Trimesh | None:
     """Solid rods on the window grid, spanning the silicone gap.
@@ -545,12 +601,23 @@ def build_silicone_tooling(part: trimesh.Trimesh, spec: CastSpec,
     jacket = trimesh.boolean.difference([outer, chamber])
     if pil is not None:
         jacket = trimesh.boolean.union([jacket, pil])
-    # Fill port through the lid, on the axis, sized on viscous fill rather than on
-    # jamming — the silicone pour carries no aggregate.
+    # Fill port through the lid, sized on viscous fill rather than on jamming — the
+    # silicone pour carries no aggregate.
+    #
+    # PLACED ON THE RUBBER, NOT ON THE PLAN CENTROID. The centroid is the obvious
+    # choice and it is wrong for any annular gap: the vessel's rubber is a shell, so
+    # its plan centroid sits in the middle of the aperture bore where there is no
+    # rubber at all. Measured, before this: the spout column held 0.0 cm3 of rubber on
+    # the vessel — it drilled straight down the bore and the pour would have gone on
+    # the bench. `polylabel` returns the point of the gap's own cross-section furthest
+    # from any boundary, which is both inside the rubber and the most forgiving place
+    # to aim a nozzle.
+    fill_xy, fill_gap = fill_port(gap, z_hi, st, d=spec.spout_d,
+                                  depth=6 * wall)
     spout = trimesh.creation.cylinder(
-        radius=spec.spout_d / 2, height=4 * wall, sections=32,
+        radius=spec.spout_d / 2, height=6 * wall, sections=32,
         transform=trimesh.transformations.translation_matrix(
-            [shadow.centroid.x, shadow.centroid.y, z_hi + st + wall]))
+            [fill_xy[0], fill_xy[1], z_hi + st - 3 * wall + 2.0]))
     jacket = trimesh.boolean.difference([jacket, spout])
 
     lo, hi = bisect(jacket, 2, plane)
@@ -560,8 +627,15 @@ def build_silicone_tooling(part: trimesh.Trimesh, spec: CastSpec,
         hi = trimesh.boolean.difference([hi, sockets])
 
     v = float(gap.volume)
+    # Does the port actually open into rubber, and does the rubber survive the
+    # pillars? Neither is visible in a render and both are fatal: a port that misses
+    # pours onto the bench, and a severed skin is not a mould.
+    reach = fill_gap
     return {
         "parts": {"jacket_a": lo, "jacket_b": hi, "core": core},
+        "fill_xy": fill_xy, "fill_section_mm2": fill_gap,
+        "fill_reaches_rubber_mm3": reach,
+        "skin_bodies": int(gap.body_count),
         "silicone_volume_mm3": v,
         "silicone_mass_g": v * spec.rho_g_cm3 / 1000.0,
         "n_pillars": 0 if pil is None else int(pil.body_count),
@@ -594,6 +668,8 @@ def build_rigid_mould(part: trimesh.Trimesh, spec: CastSpec,
         hi = trimesh.boolean.difference([hi, sockets])
     return {
         "parts": {"lower": lo, "upper": hi},
+        "fill_xy": (0.0, 0.0), "fill_section_mm2": 0.0,
+        "fill_reaches_rubber_mm3": 0.0, "skin_bodies": 1,
         "silicone_volume_mm3": 0.0, "silicone_mass_g": 0.0, "n_pillars": 0,
         "procedure": [
             "print lower and upper",
@@ -662,12 +738,15 @@ def build_mould(geom, spec: CastSpec | None = None, *, pitch: float = 0.0,
         "silicone_volume_mm3": built["silicone_volume_mm3"],
         "silicone_mass_g": built["silicone_mass_g"],
         "n_pillars": built["n_pillars"],
+        "fill_reaches_rubber_mm3": built["fill_reaches_rubber_mm3"],
+        "skin_bodies": built["skin_bodies"],
         "procedure": built["procedure"],
-        "checks": checks(report, win, spec),
+        "checks": checks(report, win, spec, built, parts),
     }
 
 
-def checks(report: dict, win: dict, spec: CastSpec) -> list:
+def checks(report: dict, win: dict, spec: CastSpec, built: dict,
+           parts: dict) -> list:
     """The handful of things that can actually be wrong here.
 
     Deliberately short. The voxel path ran volume balances, release sweeps and Euler
@@ -689,4 +768,27 @@ def checks(report: dict, win: dict, spec: CastSpec) -> list:
             "pass": bool(win["d_mm"] >= 2.0 * spec.d_max),
             "detail": f"{win['d_mm']:.0f} mm against 2 x d_max = "
                       f"{2 * spec.d_max:.0f} mm"}]
+    if spec.goal == "silicone":
+        out += [
+            {"check": "the fill port opens into rubber",
+             "pass": bool(built["fill_reaches_rubber_mm3"] > 0),
+             "detail": f"{built['fill_reaches_rubber_mm3']/1000:.1f} cm3 of the port "
+                       f"column is rubber, on a "
+                       f"{built['fill_section_mm2']:.0f} mm2 section — a port on the "
+                       f"plan centroid misses an annular gap entirely"},
+            {"check": "the cast skin is one piece",
+             "pass": bool(built["skin_bodies"] == 1),
+             "detail": f"{built['skin_bodies']} body(s) after the window pillars cut "
+                       f"through it"},
+        ]
+    # The two halves must not share material — a boolean that mis-signed would give
+    # each of them the same volume and nothing else would notice.
+    a, b = list(parts.values())[:2]
+    try:
+        ov = float(trimesh.boolean.intersection([a, b]).volume)
+    except Exception:
+        ov = float("nan")
+    out.append({"check": "the halves do not overlap",
+                "pass": bool(ov == 0.0),
+                "detail": f"{ov/1000:.3f} cm3 shared"})
     return out
