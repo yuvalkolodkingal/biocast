@@ -553,8 +553,11 @@ def tab_mould(typology, mix, proc, jam_ratio):
                            help="Thicker is more durable but a worse vapour "
                                 "barrier, and silicone is the cost driver.")
 
-    st.caption("A mould solve is heavier than a design score — the silicone path "
-               "runs a field solve per boundary condition.")
+    st.caption(
+        "A mould solve is heavier than a design score. Measured on two cores (what a "
+        "basic hosted container gives you): **rigid ~15 s, silicone ~2-3 min**, "
+        "because the silicone path runs an oxygen field solve per boundary condition "
+        "and again per candidate window pitch. It is faster on a workstation.")
     if not st.button(f"Generate {kind} mould", type="primary"):
         return
 
