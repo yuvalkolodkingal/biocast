@@ -601,6 +601,24 @@ def mould_stl_bundle(res: dict, *, prefix: str, roles=("print", "cast_silicone")
     return buf.getvalue(), manifest
 
 
+def bundled_mesh(zip_bytes: bytes, name: str):
+    """Load one part back out of the bundle, as a Trimesh.
+
+    The preview reads the ARCHIVE rather than keeping the meshes alongside it, for
+    two reasons. It is what the user actually downloads — a preview built from a
+    separately-held mesh could drift from the file in the zip, and on this path the
+    whole point is that the part list and the archive agree. And `mould_record`
+    deliberately returns no voxel grids, so re-meshing on demand is not an option
+    that costs nothing.
+    """
+    import io
+    import zipfile
+    import trimesh
+    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as z:
+        with z.open(name) as fh:
+            return trimesh.load(io.BytesIO(fh.read()), file_type="stl")
+
+
 def jsonable(o):
     """Strip numpy scalars and arrays so a summary survives json.dumps and, more
     importantly, so nothing that reaches `mould_record`'s return still holds a

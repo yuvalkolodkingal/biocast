@@ -162,12 +162,28 @@ jobs:
       - name: Wait for the Space to build
         # Without this the job goes green while the Space sits in BUILD_ERROR — the
         # upload succeeding says nothing about whether the container starts.
+        #
+        # ON A PRIVATE SPACE UNDER TRUSTED PUBLISHERS, IT CANNOT RUN. Reading the
+        # runtime is a read permission, and a publish-scoped token only has write:
+        # measured, `get_space_runtime` 401s with the same token that just committed
+        # to the repo. That is a real gap in what CI can verify, so it degrades to a
+        # warning that names what went unchecked rather than failing a deploy that
+        # actually succeeded — or silently implying it was watched.
         run: |
           python - <<'PY'
           import os, sys, time
           from huggingface_hub import HfApi, SpaceStage
+          from huggingface_hub.errors import RepositoryNotFoundError
 
           api, repo = HfApi(), os.environ["HF_SPACE_ID"]
+          try:
+              api.get_space_runtime(repo)
+          except RepositoryNotFoundError:
+              print(f"::warning::pushed, but the build was NOT watched: a "
+                    f"Trusted-Publisher token can write this Space and cannot read "
+                    f"its runtime, so a BUILD_ERROR here would go unreported. Check "
+                    f"https://huggingface.co/spaces/{repo}?logs=build")
+              sys.exit(0)
           BAD = {SpaceStage.BUILD_ERROR, SpaceStage.CONFIG_ERROR,
                  SpaceStage.RUNTIME_ERROR, SpaceStage.NO_APP_FILE}
           BUSY = {SpaceStage.BUILDING, SpaceStage.APP_STARTING,

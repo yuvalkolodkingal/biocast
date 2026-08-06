@@ -1018,6 +1018,32 @@ def tab_mould(typology, mix, proc, jam_ratio):
          for p in rec["parts"]]),
         hide_index=True, width="stretch")
 
+    # ---- 3D preview, read back out of the archive --------------------------
+    st.markdown("##### Look at a part")
+    man = rec["manifest"]
+    pick = st.selectbox(
+        "Part", range(len(man)), key=f"mould_preview_{rec['kind']}_{rec['typology']}",
+        format_func=lambda i: (
+            f"{'🖨' if man[i]['role'] == 'print' else '🩹'} "
+            f"{man[i]['file'].split('/')[-1]}  ·  {man[i]['volume_cm3']:.0f} cm³  ·  "
+            f"{'×'.join(f'{v:.0f}' for v in man[i]['bbox_mm'])} mm"),
+        help="Loaded from the zip below, so what you see is the file you get.")
+    m = man[pick]
+    with st.spinner("Loading the part…"):
+        mesh = E.bundled_mesh(rec["zip"], m["file"])
+    p = V.stl_viewer(mesh)
+    note = (PART_NOTE.get(m["part"], "") or
+            ("3D print this" if m["role"] == "print" else "cast this in silicone"))
+    st.caption(
+        f"**{m['part']}** — {note}. Drag to orbit, scroll to zoom; **Section** cuts "
+        f"the part on a plane, which is how to read a wall thickness or check that a "
+        f"cavity closed."
+        + (f" Simplified to {p['nFaces']:,} of {p['nFacesFull']:,} triangles for "
+           f"display; the download is full resolution."
+           if p["nFacesFull"] > p["nFaces"] else "")
+        + ("" if m["watertight"] else
+           "  ⚠️ This part reads as **not watertight**, so its volume is unreliable."))
+
     c1, c2 = st.columns(2)
     with c1:
         st.download_button(
