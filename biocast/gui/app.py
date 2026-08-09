@@ -594,10 +594,12 @@ def tab_explore(typology, mix, proc, jam_ratio, n_mc):
         "model. When it finishes you can push the winner straight into the sliders, "
         "and the **Mould** tab will then build the silicone mould for it.")
 
-    c1, c2, c3, c4 = st.columns([1, 1, 1, 1.4])
+    detected = E.cpu_budget()
+    c1, c2, c3, c4, c5 = st.columns([1, 1, 0.8, 1, 1.4])
     n = c1.select_slider("Random samples", [12, 24, 48, 96], 48,
                          help="This stage is where the designs actually come from. "
-                              "Spend budget here first.")
+                              "Spend budget here first — and it is the stage that "
+                              "runs on every core, so it is the cheapest to raise.")
     n_ref = c2.select_slider("Refinement depth", [0, 1, 2, 3], 1,
                              help="Compass search: each parameter up and down, the "
                                   "step halving only when a whole sweep fails. It "
@@ -605,17 +607,34 @@ def tab_explore(typology, mix, proc, jam_ratio, n_mc):
                                   "better designs — measured across all three "
                                   "typologies it matched the best sampled design "
                                   "every time and never beat it. Raise it only when "
-                                  "polishing a design you already like.")
+                                  "polishing a design you already like. This stage "
+                                  "is sequential: each move depends on how the last "
+                                  "one turned out, so it cannot use the extra cores.")
     seed = c3.number_input("Seed", 0, 9999, 0, 1)
+    workers = c4.slider("Workers", 1, max(detected, 1), detected, 1,
+                        help=f"Detected: {E.describe_workers(detected)}. Taken from "
+                             "the CPU quota when running in a container and from this "
+                             "process's CPU affinity otherwise, then capped by "
+                             "available memory — a worker holds its own voxel grids. "
+                             "Set BIOCAST_WORKERS to override. Results do not depend "
+                             "on this: the same seed gives the same table at any "
+                             "setting.")
     n_par = len(GEOM_SPACE[typology]) + len(GEOM_CHOICES[typology])
     total = int(n) + int(n_ref) * n_par * 4 + 1
-    c4.metric("Designs to score", f"≤ {total}",
+    c5.metric("Designs to score", f"≤ {total}",
               help=f"1 current + {n} random + at most {n_ref} x {n_par} x 4 refining. "
                    "The refinement stops as soon as it stops improving, so the real "
                    "count is usually lower.")
-    st.caption(f"Up to about {total * 1.3:.0f} s at roughly 1.3 s per design on two "
-               f"cores. The design currently on the sliders is scored first, so the "
-               f"search can never hand back something worse than what you have.")
+    # Sampling divides by the worker count; refinement does not, so they are estimated
+    # separately. A single estimate would be badly wrong at both ends of the Workers
+    # slider — the stages scale differently and either can dominate.
+    est = (int(n) + 1) * 1.3 / max(int(workers), 1) + int(n_ref) * n_par * 4 * 1.3
+    st.caption(
+        f"Up to about {est:.0f} s at roughly 1.3 s per design — "
+        f"{int(n) + 1} sampled across {workers} worker{'s' if workers != 1 else ''}, "
+        f"then up to {int(n_ref) * n_par * 4} refined one at a time. The design "
+        f"currently on the sliders is scored first, so the search can never hand back "
+        f"something worse than what you have.")
 
     if st.button("Search", type="primary"):
         prog = st.progress(0.0, text="scoring…")
@@ -625,7 +644,7 @@ def tab_explore(typology, mix, proc, jam_ratio, n_mc):
             rows = E.search_shapes(
                 typology, GEOM_SPACE[typology], GEOM_CHOICES[typology], derive_geom,
                 mix, proc, jam_ratio=jam_ratio, n_random=int(n), n_refine=int(n_ref),
-                seed=int(seed), start=cur, n_mc=n_mc,
+                seed=int(seed), start=cur, n_mc=n_mc, workers=int(workers),
                 progress=lambda f, d, t: prog.progress(f, text=f"scored {d}/{t}"))
         prog.empty()
         # Same reason the Mould tab holds its result: any widget interaction re-runs

@@ -18,6 +18,9 @@ sweep learned the hard way and any interactive user needs by default:
 """
 from __future__ import annotations
 
+import os
+import sys
+from contextlib import contextmanager
 from functools import lru_cache
 from pathlib import Path
 
@@ -47,6 +50,131 @@ JAM_RATIO_LIT = 6.0
 PITCH = {"shell": 2.0, "block": 3.0, "tile": 1.6}
 
 _HERE = Path(__file__).resolve().parents[2]
+
+
+# --------------------------------------------------------------------------- workers
+#: Resident memory one scoring worker needs, in MB. Measured, not guessed: a single
+#: `evaluate` peaks about 190 MB above baseline on the block and tile grids (the
+#: occupancy, depth, distance and SDF arrays coexist), and a forked child adds little
+#: on top because the interpreter and the numpy/scipy/trimesh pages are shared
+#: copy-on-write with the pool's parent. Rounded up for the pages a child does dirty.
+#:
+#: This is a real constraint rather than a formality. The search holds no grids
+#: between candidates, but N workers hold N grids AT THE SAME MOMENT, so the memory
+#: is what actually bounds the worker count on the small containers this app deploys
+#: to — not the core count.
+WORKER_MEM_MB = 260
+
+#: Never exceed this many workers however many cores are found. Past roughly this
+#: point the pool is bounded by memory bandwidth on the same voxel grids rather than
+#: by cores, and the scheduling and pickling overhead starts to show.
+WORKER_CAP = 16
+
+
+def _cgroup_cpu_quota() -> float | None:
+    """CPUs this container is actually allowed, or None if unconstrained.
+
+    Both of this project's deploy targets are containers — the Dockerfile serves
+    Hugging Face Spaces and Cloud Run — and inside one, `os.cpu_count()` reports the
+    HOST's cores. A 2-vCPU Space reports 16, and a pool built on that number is worse
+    than staying serial: the workers time-slice onto two cores while their voxel
+    grids all sit in RAM at once.
+    """
+    try:                                                    # cgroup v2
+        quota, period = Path("/sys/fs/cgroup/cpu.max").read_text().split()
+        if quota != "max":
+            return float(quota) / float(period)
+    except Exception:
+        pass
+    try:                                                    # cgroup v1
+        root = Path("/sys/fs/cgroup/cpu")
+        q = float((root / "cpu.cfs_quota_us").read_text())
+        p = float((root / "cpu.cfs_period_us").read_text())
+        if q > 0 and p > 0:
+            return q / p
+    except Exception:
+        pass
+    return None
+
+
+def _available_mb() -> float | None:
+    """Memory we may actually use, from the cgroup limit or /proc/meminfo."""
+    best = None
+    for p in ("/sys/fs/cgroup/memory.max",                  # v2
+              "/sys/fs/cgroup/memory/memory.limit_in_bytes"):  # v1
+        try:
+            raw = Path(p).read_text().strip()
+            if raw != "max":
+                # v1 writes a sentinel near 2**63 to mean "no limit"
+                v = float(raw) / 1e6
+                if v < 1e9:
+                    best = v if best is None else min(best, v)
+        except Exception:
+            pass
+    try:
+        for line in Path("/proc/meminfo").read_text().splitlines():
+            if line.startswith("MemAvailable:"):
+                v = float(line.split()[1]) / 1024.0
+                best = v if best is None else min(best, v)
+                break
+    except Exception:
+        pass
+    return best
+
+
+def cpu_budget(requested: int | None = None) -> int:
+    """How many scoring workers to run. Detected, never assumed.
+
+    Order of authority, narrowest first:
+
+      BIOCAST_WORKERS   explicit override, for when the operator knows better
+      cgroup quota      what the container is actually allowed (see above)
+      CPU affinity      what this process is permitted to run on; `taskset` and most
+                        schedulers restrict this without touching `os.cpu_count()`
+      os.cpu_count()    last resort
+
+    Then clamped by `WORKER_MEM_MB` against available memory, and by `WORKER_CAP`.
+    Returning 1 is a normal answer, not a failure — the caller runs in-process.
+    """
+    env = os.environ.get("BIOCAST_WORKERS", "").strip()
+    if requested is None and env:
+        try:
+            requested = int(env)
+        except ValueError:
+            requested = None
+    if requested is not None and int(requested) > 0:
+        return max(1, min(int(requested), WORKER_CAP))
+
+    if hasattr(os, "process_cpu_count"):            # 3.13+, affinity-aware
+        n = os.process_cpu_count() or 1
+    elif hasattr(os, "sched_getaffinity"):          # Linux
+        n = len(os.sched_getaffinity(0)) or 1
+    else:
+        n = os.cpu_count() or 1
+
+    quota = _cgroup_cpu_quota()
+    if quota is not None:
+        n = min(n, max(1, int(quota)))
+
+    mem = _available_mb()
+    if mem is not None:
+        # leave the parent its own headroom before dividing the rest into workers
+        n = min(n, max(1, int((mem - WORKER_MEM_MB) // WORKER_MEM_MB)))
+
+    return int(max(1, min(n, WORKER_CAP)))
+
+
+def describe_workers(n: int) -> str:
+    """One line on where the worker count came from, for the interface to show."""
+    if os.environ.get("BIOCAST_WORKERS", "").strip():
+        src = "set by BIOCAST_WORKERS"
+    elif _cgroup_cpu_quota() is not None:
+        src = "from this container's CPU quota"
+    else:
+        src = "from the CPUs this process may run on"
+    mem = _available_mb()
+    note = f", {mem/1024:.1f} GB available" if mem else ""
+    return f"{n} worker{'s' if n != 1 else ''} — {src}{note}"
 
 
 #: Where the literature JSONs may live, relative to the project root. `data/` is the
@@ -500,11 +628,134 @@ def rank_design(r: dict) -> tuple:
             float(r.get("score", 0.0)))
 
 
+def _row_from(r: dict) -> dict:
+    """The scalar summary of one scored design — the only part a search row needs.
+
+    Kept apart from `evaluate` because it is also the pool's return payload, and what
+    `evaluate` returns is mostly unshippable: `_mesh` is a Trimesh and `_diag` carries
+    the full voxel stack, so returning the raw dict would pickle 190 MB of grids back
+    down a pipe per candidate to compute a dozen floats from them. Shared by the
+    parallel and serial paths so the two cannot drift.
+    """
+    return {"score": r["score"], "score_lo": r["score_lo"], "score_hi": r["score_hi"],
+            "feasible": r["feasible"], "n_fail": r["n_fail"],
+            "limiting": r["dominant_failure_mode"],
+            "section_mm": r["min_section_measured_mm"],
+            "volume_cm3": r["volume_mm3"] / 1000.0,
+            "cemented_fraction": r["cemented_fraction"],
+            "failed": ", ".join(r["failed_rules"])}
+
+
+def _score_one(args) -> dict | None:
+    """Score one design and return only its summary. The pool's unit of work.
+
+    Module-level and taking plain data on purpose: a forkserver or spawn child
+    unpickles this by qualified name, so it cannot be a closure inside
+    `search_shapes`, and the `derive` callable is applied in the PARENT rather than
+    shipped — `derive_geom` lives in `biocast.gui.app`, and importing that module in a
+    worker would execute `st.set_page_config` at import time.
+
+    Returns None for a geometry that fails to build, exactly as the serial path did;
+    an unbuildable candidate is a normal outcome of sampling a box, not an error.
+    """
+    typology, geom_kw, mix_kw, proc_kw, jam_ratio, n_mc = args
+    try:
+        r = evaluate(typology, geom_kw, mix_kw, proc_kw,
+                     jam_ratio=jam_ratio, n_mc=n_mc)
+    except Exception:
+        return None
+    return _row_from(r)
+
+
+def _worker_init() -> None:
+    """Keep each worker single-threaded.
+
+    The pool already uses every core, so a worker whose numpy also tries to is
+    oversubscribing by the worker count. These are read lazily by the threading
+    layers, and the heavy calls here (`distance_transform_edt`, marching cubes,
+    elementwise SDF work) are single-threaded regardless — this is belt and braces
+    for the ones that are not.
+    """
+    for var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
+                "NUMEXPR_NUM_THREADS", "VECLIB_MAXIMUM_THREADS"):
+        os.environ.setdefault(var, "1")
+
+
+@contextmanager
+def _no_main_reexec():
+    """Stop a forkserver/spawn worker from re-running the app script.
+
+    `multiprocessing.spawn` ships the parent's `__main__` path to each new worker,
+    which executes it with `runpy.run_path(..., run_name="__mp_main__")` so that
+    anything defined there exists for unpickling. Under Streamlit that path is the
+    studio: Streamlit installs a synthetic `__main__` whose `__file__` is the running
+    script, and `streamlit_app.py` calls `main()` at module level with no
+    `if __name__ == "__main__"` guard to stop it — so every worker would boot its own
+    copy of the whole app, which is both the CPU this change exists to save and a
+    stream of context-less Streamlit warnings.
+
+    Nothing sent to a worker needs `__main__`. `_score_one` and its arguments resolve
+    inside `biocast.gui.engine`, which the forkserver preloads; `derive` is applied in
+    the parent for this very reason. With no `__file__` and no `__spec__` on
+    `__main__`, `get_preparation_data` sends neither key and the child skips the
+    fixup entirely.
+
+    Held across the submits, not just construction: `ProcessPoolExecutor` starts
+    workers lazily, so the first `submit` is what triggers the copy.
+    """
+    main = sys.modules.get("__main__")
+    if main is None:
+        yield
+        return
+    had_file = hasattr(main, "__file__")
+    file_, spec = getattr(main, "__file__", None), getattr(main, "__spec__", None)
+    try:
+        if had_file:
+            del main.__file__
+        main.__spec__ = None
+        yield
+    finally:
+        if had_file:
+            main.__file__ = file_
+        main.__spec__ = spec
+
+
+def _make_pool(n_workers: int):
+    """A process pool, or None to stay in-process.
+
+    FORKSERVER, not the platform default. Streamlit runs the script in a worker
+    thread, and plain `fork` from a multithreaded process inherits whatever locks
+    were held at the instant of the call — the classic way to get a child that
+    deadlocks inside malloc before it reaches any of our code. A forkserver forks
+    from a clean single-threaded process instead.
+
+    Preloading this module into that server is what keeps forkserver affordable:
+    without it every child imports numpy, scipy and trimesh for itself and pays
+    ~200 MB, whereas children forked from a server that already imported them share
+    those pages copy-on-write. It also moves the import cost off the first candidate.
+    """
+    if n_workers <= 1:
+        return None
+    import multiprocessing as mp
+    from concurrent.futures import ProcessPoolExecutor
+    try:
+        methods = mp.get_all_start_methods()
+        ctx = mp.get_context("forkserver" if "forkserver" in methods else "spawn")
+        if hasattr(ctx, "set_forkserver_preload"):
+            ctx.set_forkserver_preload(["biocast.gui.engine"])
+        return ProcessPoolExecutor(max_workers=n_workers, mp_context=ctx,
+                                   initializer=_worker_init)
+    except Exception:
+        # A sandbox that forbids subprocesses is a reason to run serially, not to
+        # fail the search. The caller's results are identical either way.
+        return None
+
+
 def search_shapes(typology: str, space: dict, choices: dict, derive,
                   mix_kw: dict, proc_kw: dict, *, jam_ratio: float = JAM_RATIO_LIT,
                   n_random: int = 24, n_refine: int = 2, seed: int = 0,
                   n_mc: int = 150, start: dict | None = None,
-                  progress=None) -> list:
+                  workers: int | None = None, progress=None) -> list:
     """Find the design most likely to cement, by sampling then refining.
 
     Random search alone is a poor optimiser in eight dimensions, and it was what the
@@ -560,6 +811,20 @@ def search_shapes(typology: str, space: dict, choices: dict, derive,
     d_max = 4 mm the jamming limit is 24.0 mm, which is exactly where the measured
     section tends to land. `_snap` makes the handover lossless instead of nearly so.
 
+    THE SAMPLING STAGE RUNS ON EVERY CORE `cpu_budget` FINDS; the refinement does not,
+    and cannot. A compass search accepts the first improving move and continues from
+    the point it just moved to, so the later probes of a sweep depend on how the
+    earlier ones turned out — evaluating them together would score a different set of
+    designs and could return a different winner. Since the sampling stage is both the
+    larger share of the budget and, by the paragraph above, the stage that actually
+    finds the design, that is where the cores go. `workers=1` is not a fallback path:
+    it runs the identical code in-process.
+
+    RESULTS DO NOT DEPEND ON THE WORKER COUNT. Every candidate is drawn from the RNG
+    and deduplicated BEFORE any of them is dispatched, and the rows are collected back
+    in draw order rather than completion order — so the same seed gives the same
+    table, in the same order, on 2 cores or 32.
+
     Returns every candidate scored, best first.
     """
     rng = np.random.default_rng(int(seed))
@@ -574,31 +839,11 @@ def search_shapes(typology: str, space: dict, choices: dict, derive,
             return float(np.clip(v, s["lo"], s["hi"]))
         return float(np.clip(round(float(v) / st) * st, s["lo"], s["hi"]))
 
-    def _score(g):
-        key = tuple(round(float(g[k]), 4) if isinstance(g[k], (int, float)) else g[k]
-                    for k in sorted(g))
-        if key in seen:
-            return None
-        seen.add(key)
-        try:
-            r = evaluate(typology, derive(typology, g), mix_kw, proc_kw,
-                         jam_ratio=jam_ratio, n_mc=n_mc)
-        except Exception:
-            return None
-        row = {**g, "score": r["score"], "score_lo": r["score_lo"],
-               "score_hi": r["score_hi"], "feasible": r["feasible"],
-               "n_fail": r["n_fail"], "limiting": r["dominant_failure_mode"],
-               "section_mm": r["min_section_measured_mm"],
-               "volume_cm3": r["volume_mm3"] / 1000.0,
-               "cemented_fraction": r["cemented_fraction"],
-               "failed": ", ".join(r["failed_rules"])}
-        rows.append(row)
-        return row
-
     all_names = names + list(choices)
     budget = int(n_refine) * len(all_names) * 4     # ceiling, not a target
     total = int(n_random) + budget + (1 if start else 0)
     done = 0
+    pool = None
 
     def _tick():
         nonlocal done
@@ -606,19 +851,101 @@ def search_shapes(typology: str, space: dict, choices: dict, derive,
         if progress:
             progress(min(done / max(total, 1), 1.0), done, total)
 
-    # Only if it covers every searched parameter: a partial start would be scored with
-    # dataclass defaults filling the gaps, and could then be picked as `best` — whose
-    # missing keys the refinement's `cur` would immediately fail on.
+    def _key(g):
+        return tuple(round(float(g[k]), 4) if isinstance(g[k], (int, float)) else g[k]
+                     for k in sorted(g))
+
+    def _score_batch(cands: list[dict]) -> list[dict]:
+        """Score a whole batch, in draw order, across the pool if there is one.
+
+        `derive` is applied HERE rather than in the worker: it is pure dict work that
+        costs nothing, and it lives in the Streamlit module, which a worker must not
+        import. See `_score_one`.
+        """
+        fresh, dups = [], 0
+        for g in cands:
+            k = _key(g)
+            if k in seen:
+                dups += 1
+                continue
+            seen.add(k)
+            fresh.append(g)
+        for _ in range(dups):                   # a duplicate still consumed a draw
+            _tick()
+        if not fresh:
+            return []
+
+        work = [(typology, derive(typology, g), mix_kw, proc_kw, jam_ratio, n_mc)
+                for g in fresh]
+        subs: list[dict | None] = [None] * len(fresh)
+        landed = [False] * len(fresh)
+
+        def _serially(idx):
+            for i in idx:
+                subs[i] = _score_one(work[i])
+                landed[i] = True
+                _tick()
+
+        if pool is None or len(fresh) == 1:
+            _serially(range(len(work)))
+        else:
+            from concurrent.futures import as_completed
+            from concurrent.futures.process import BrokenProcessPool
+            futs = {pool.submit(_score_one, w): i for i, w in enumerate(work)}
+            try:
+                # ticked as they land, so the bar tracks real progress; STORED by
+                # index, so `rows` stays in draw order however completions interleave.
+                for f in as_completed(futs):
+                    i = futs[f]
+                    subs[i], landed[i] = f.result(), True
+                    _tick()
+            except (BrokenProcessPool, OSError):
+                # A worker died mid-flight — in practice the OOM killer, on a box
+                # where BIOCAST_WORKERS was set above what `cpu_budget` would have
+                # allowed. Finish what is left in-process: a slow search is a better
+                # outcome than a lost one, and `_score_one` is pure, so re-running
+                # the unfinished candidates is safe.
+                _serially([i for i, ok in enumerate(landed) if not ok])
+
+        got = []
+        for g, sub in zip(fresh, subs):
+            if sub is None:                     # geometry that would not build
+                continue
+            row = {**g, **sub}
+            rows.append(row)
+            got.append(row)
+        return got
+
+    def _score(g):
+        got = _score_batch([g])
+        return got[0] if got else None
+
+    # Drawn in full BEFORE anything is scored, so the candidate set comes from the
+    # seed alone and not from how the pool happens to interleave.
+    batch = []
+    # `start` only if it covers every searched parameter: a partial start would be
+    # scored with dataclass defaults filling the gaps, and could then be picked as
+    # `best` — whose missing keys the refinement's `cur` would immediately fail on.
     if start and all(k in start for k in all_names):
-        _score({k: (_snap(k, start[k]) if k in space else start[k])
-                for k in all_names})
-        _tick()
+        batch.append({k: (_snap(k, start[k]) if k in space else start[k])
+                      for k in all_names})
     for _ in range(int(n_random)):
         g = {k: _snap(k, rng.uniform(s["lo"], s["hi"])) for k, s in space.items()}
         for k, opts in choices.items():
             g[k] = opts[int(rng.integers(len(opts)))]
-        _score(g)
-        _tick()
+        batch.append(g)
+
+    with _no_main_reexec():
+        pool = _make_pool(min(cpu_budget(workers), len(batch)))
+        try:
+            _score_batch(batch)
+        finally:
+            if pool is not None:
+                # Shut down HERE, not at the end. The refinement below is sequential,
+                # so the workers have nothing left to do, and N idle workers holding
+                # N voxel grids is the largest thing this function ever keeps alive.
+                pool.shutdown(wait=True)
+                pool = None
 
     if not rows:
         return []
@@ -636,9 +963,8 @@ def search_shapes(typology: str, space: dict, choices: dict, derive,
             for opt in choices[k]:
                 if opt == cur[k] or used >= budget:
                     continue
-                r = _score({**cur, k: opt})
+                r = _score({**cur, k: opt})     # `_score_batch` does the ticking
                 used += 1
-                _tick()
                 if r and rank_design(r) > rank_design(best):
                     best, cur = r, {kk: r[kk] for kk in all_names}
                     improved = True
@@ -654,7 +980,6 @@ def search_shapes(typology: str, space: dict, choices: dict, derive,
                 trial[k] = _snap(k, cur[k] + sign * step)
                 r = _score(trial)
                 used += 1
-                _tick()
                 if r and rank_design(r) > rank_design(best):
                     best, cur = r, {kk: r[kk] for kk in all_names}
                     improved = True
