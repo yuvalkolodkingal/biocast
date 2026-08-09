@@ -277,8 +277,17 @@ def score_design(design: Design, diag: dict, *, phys: PhysicsInputs | None = Non
         # gas-phase reaction-diffusion depth at the sampled operating point
         D_eff = ox.effective_diffusivity(D_free, phi, sw, gas=True)
         L_gas = ox.analytic_penetration_depth(D_eff, C0, R)
-        # how deep air has actually entered by the end of the cure
-        L_dry = dry.air_entry_depth(E, t_c, phi, delta_saturation=dS)
+        # how deep air has actually entered by the end of the cure.
+        # `rh_pct` is NOT optional here. It defaults to 90 in `air_entry_depth`, and
+        # omitting it pinned every score in the GUI to RH = 90 whatever the slider
+        # said, while `feasible_window`, `solve_field` and `mould_cast` all passed
+        # the real value — so the Process tab, the oxygen figure and the Mould tab
+        # each reported a different drained depth from the one the score was built
+        # on. At the app's own default of 85 % that is 15.75 mm here against
+        # 23.62 mm there; at 99 % the banner said no thickness is feasible while
+        # this scorer still called a 14 mm wall castable at 0.857.
+        L_dry = dry.air_entry_depth(E, t_c, phi, delta_saturation=dS,
+                                    rh_pct=design.proc.rh_pct)
         eff = dry.effective_penetration(L_gas, L_dry)
         L = eff["L_eff_mm"]
         cem = float(np.mean(depths <= L)) if depths.size else 0.0
@@ -305,7 +314,8 @@ def score_design(design: Design, diag: dict, *, phys: PhysicsInputs | None = Non
     L_gas_nom = ox.analytic_penetration_depth(D_eff_nom, phys.C_O2_gas[1], phys.R_O2_bulk[1])
     t_c_nom = design.proc.cure_days if design.proc.cure_days else phys.t_cure_days[1]
     L_dry_nom = dry.air_entry_depth(phys.E_evap[1], t_c_nom, phys.phi[1],
-                                   delta_saturation=phys.dS_air_entry[1])
+                                   delta_saturation=phys.dS_air_entry[1],
+                                   rh_pct=design.proc.rh_pct)
     eff_nom = dry.effective_penetration(L_gas_nom, L_dry_nom)
     L_nom = eff_nom["L_eff_mm"]
     lv, lc = np.unique(limiters, return_counts=True)

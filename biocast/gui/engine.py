@@ -549,11 +549,30 @@ def search_shapes(typology: str, space: dict, choices: dict, derive,
     collapses to 0.000 for plenty of sound designs, and the median then does the
     discriminating — which is the honest outcome, not a workaround.
 
+    EVERY CANDIDATE IS SAMPLED ON THE SLIDER'S OWN GRID. The search used to draw
+    continuous values while the "use this design" button rounded them to each
+    slider's `step` on the way back — so the design handed over was not the design
+    that was scored, and the Explore tab could report a feasible winner that the
+    Design tab immediately rejected. Measured over 60 shell draws at d_max = 4 mm,
+    that rounding alone changed the verdict on 5 of them, in both directions. It is
+    worse than the step sizes suggest because the section is measured off a 2 mm
+    voxel grid: a 0.15 mm nudge to `wall` moves it a whole voxel, and at
+    d_max = 4 mm the jamming limit is 24.0 mm, which is exactly where the measured
+    section tends to land. `_snap` makes the handover lossless instead of nearly so.
+
     Returns every candidate scored, best first.
     """
     rng = np.random.default_rng(int(seed))
     names = list(space)
     rows, seen = [], set()
+
+    def _snap(k: str, v: float) -> float:
+        """Put a value on the grid the slider for `k` can actually hold."""
+        s = space[k]
+        st = float(s.get("step") or 0.0)
+        if st <= 0:
+            return float(np.clip(v, s["lo"], s["hi"]))
+        return float(np.clip(round(float(v) / st) * st, s["lo"], s["hi"]))
 
     def _score(g):
         key = tuple(round(float(g[k]), 4) if isinstance(g[k], (int, float)) else g[k]
@@ -591,10 +610,11 @@ def search_shapes(typology: str, space: dict, choices: dict, derive,
     # dataclass defaults filling the gaps, and could then be picked as `best` — whose
     # missing keys the refinement's `cur` would immediately fail on.
     if start and all(k in start for k in all_names):
-        _score({k: start[k] for k in all_names})
+        _score({k: (_snap(k, start[k]) if k in space else start[k])
+                for k in all_names})
         _tick()
     for _ in range(int(n_random)):
-        g = {k: float(rng.uniform(s["lo"], s["hi"])) for k, s in space.items()}
+        g = {k: _snap(k, rng.uniform(s["lo"], s["hi"])) for k, s in space.items()}
         for k, opts in choices.items():
             g[k] = opts[int(rng.integers(len(opts)))]
         _score(g)
@@ -624,12 +644,14 @@ def search_shapes(typology: str, space: dict, choices: dict, derive,
                     improved = True
         for k in names:
             s = space[k]
-            step = frac * (s["hi"] - s["lo"])
+            # at least one slider notch: below that the snapped trial is the point
+            # we are already standing on, and `_score` dedupes it away as a no-op.
+            step = max(frac * (s["hi"] - s["lo"]), float(s.get("step") or 0.0))
             for sign in (+1, -1):
                 if used >= budget:
                     break
                 trial = dict(cur)
-                trial[k] = float(np.clip(cur[k] + sign * step, s["lo"], s["hi"]))
+                trial[k] = _snap(k, cur[k] + sign * step)
                 r = _score(trial)
                 used += 1
                 _tick()

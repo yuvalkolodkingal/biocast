@@ -695,8 +695,15 @@ def build_mould(geom, spec: CastSpec | None = None, *, pitch: float = 0.0,
         from .gui import engine as eng
         phys = eng.load_physics()
 
+    # The scoring pitch, not a second copy of it. This dict used to be inlined here
+    # with block at 2.5 mm against the engine's 3.0, so a block was voxelised at a
+    # different resolution in the Mould tab than in the Design tab and the two
+    # reported different coverage for the same body. Imported inside the function
+    # because `gui.engine` reaches back into this module.
+    from .gui.engine import PITCH
+
     mod = {"shell": sh, "block": bl, "tile": tl}[geom.typology]
-    p = pitch or {"shell": 2.0, "block": 2.5, "tile": 1.6}[geom.typology]
+    p = pitch or PITCH[geom.typology]
     mesh, fld, origin, p = mod.build(geom, pitch=p, return_field=True)
     occ = fld <= 0.0
 

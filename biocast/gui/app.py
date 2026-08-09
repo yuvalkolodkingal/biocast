@@ -578,7 +578,14 @@ def tab_process(mix, proc, jam_ratio):
                  .format(na_rep="—", precision=0), width="stretch")
 
 
-def tab_explore(typology, mix, proc, jam_ratio):
+#: What a search's scores are only valid for. `n_mc` belongs in here with the mix and
+#: the cure: the search takes the median of the FIRST n_mc draws of a fixed-seed chain,
+#: so changing the draw count moves every score in the table.
+def _search_settings(mix, proc, jam_ratio, n_mc) -> dict:
+    return {"mix": dict(mix), "proc": dict(proc), "jam": jam_ratio, "n_mc": int(n_mc)}
+
+
+def tab_explore(typology, mix, proc, jam_ratio, n_mc):
     st.subheader("Find the shape most likely to cement")
     st.markdown(
         "Samples the design space to find a promising basin, then walks downhill "
@@ -618,7 +625,7 @@ def tab_explore(typology, mix, proc, jam_ratio):
             rows = E.search_shapes(
                 typology, GEOM_SPACE[typology], GEOM_CHOICES[typology], derive_geom,
                 mix, proc, jam_ratio=jam_ratio, n_random=int(n), n_refine=int(n_ref),
-                seed=int(seed), start=cur,
+                seed=int(seed), start=cur, n_mc=n_mc,
                 progress=lambda f, d, t: prog.progress(f, text=f"scored {d}/{t}"))
         prog.empty()
         # Same reason the Mould tab holds its result: any widget interaction re-runs
@@ -626,7 +633,7 @@ def tab_explore(typology, mix, proc, jam_ratio):
         # moment you touch anything cannot be acted on.
         st.session_state["search"] = {
             "typology": typology, "rows": rows,
-            "settings": {"mix": dict(mix), "proc": dict(proc), "jam": jam_ratio},
+            "settings": _search_settings(mix, proc, jam_ratio, n_mc),
         }
 
     got = st.session_state.get("search")
@@ -637,7 +644,7 @@ def tab_explore(typology, mix, proc, jam_ratio):
     if not rows:
         st.warning("No candidate built successfully. Try a different typology or mix.")
         return
-    if got["settings"] != {"mix": dict(mix), "proc": dict(proc), "jam": jam_ratio}:
+    if got["settings"] != _search_settings(mix, proc, jam_ratio, n_mc):
         st.warning("The mix or cure settings have changed since this search ran. "
                    "Scores below are for the settings it ran under.")
 
@@ -675,7 +682,12 @@ def tab_explore(typology, mix, proc, jam_ratio):
             v = best[k]
             if k in GEOM_SPACE[typology]:
                 s = GEOM_SPACE[typology][k]
-                # snap to the slider's own step, or Streamlit rejects the value
+                # Streamlit rejects a value off the slider's step, so this has to
+                # happen somewhere. It is a no-op now: `search_shapes` samples on
+                # this same grid, so what was scored is what arrives. It used to be
+                # where the two diverged — the search scored a continuous design and
+                # the sliders received a rounded one, which changed the verdict on
+                # about one design in twelve, in both directions.
                 v = float(np.clip(round(float(v) / s["step"]) * s["step"],
                                   s["lo"], s["hi"]))
             vals[k] = v
@@ -922,7 +934,7 @@ def main():
     with t3:
         tab_process(mix, proc, jam_ratio)
     with t4:
-        tab_explore(typology, mix, proc, jam_ratio)
+        tab_explore(typology, mix, proc, jam_ratio, n_mc)
 
     st.markdown("---")
     st.caption(
