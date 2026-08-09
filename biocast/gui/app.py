@@ -63,6 +63,27 @@ def sidebar_process():
              "6 x d_max and the fillet floor at 1.5 x d_max.")
     porosity = st.sidebar.slider("Packed porosity", 0.30, 0.50, 0.38, 0.01)
 
+    substrate_class = st.sidebar.selectbox(
+        "Substrate", ["rca", "clean_sand"],
+        format_func=lambda s: {"rca": "Construction waste (RCA)",
+                               "clean_sand": "Clean sand"}[s],
+        help="Which measured UCS envelope the capacity is drawn from. Waste is "
+             "this project's own substrate and by far the weaker: 0.34-0.72 MPa "
+             "from a single study, against a 0.3-12 MPa pooled band for clean "
+             "sand. It changes which measurement is quoted, nothing else.")
+    caco3 = st.sidebar.slider(
+        "CaCO₃ achieved (% by mass)", 0.0, 20.0, 8.0, 0.5,
+        help="ASSUMED — nothing here has been measured on this material. It is "
+             "used for ONE thing: the hard gate at 3 %, below which a specimen "
+             "cannot stand without confinement. It is deliberately not a "
+             "strength predictor, because pooled UCS-against-CaCO₃ fits give "
+             "R² ≤ 0.01 and the same carbonate content has produced strengths "
+             "12x apart.")
+    if caco3 < 3.0:
+        st.sidebar.caption(
+            ":material/warning: Below the 3 % floor the cast is not "
+            "self-supporting, so capacity reads 0 whatever the geometry.")
+
     st.sidebar.markdown("**Curing**")
     cure_days = st.sidebar.slider(
         "Cure duration (days)", 3, 60, 21, 1,
@@ -90,7 +111,8 @@ def sidebar_process():
             "The package default is 4.0; this app defaults to 6.0 on the granular-flow "
             "literature. The choice changes which designs are rejected.")
 
-    return (dict(d_max=d_max, porosity=porosity),
+    return (dict(d_max=d_max, porosity=porosity, substrate_class=substrate_class,
+                 caco3_achieved_pct=float(caco3)),
             dict(cure_days=float(cure_days), rh_pct=float(rh_pct),
                  split_mould=split_mould),
             jam_ratio, n_mc)
@@ -324,6 +346,67 @@ def geometry_panel(r: dict):
         ], columns=["", "value"]), hide_index=True, width="stretch")
 
 
+def strength_panel(r: dict):
+    """Load capacity, with the caveats attached rather than in a footnote.
+
+    Set apart from `score_header` on purpose. The score answers "will this
+    solidify"; capacity answers "what can it carry once it has", and it is
+    reported rather than scored — it never marks a design infeasible. Putting it
+    inside the four-subscore row would read as a fifth term of the product.
+
+    The interval and the provenance are shown in the same register as the
+    score's own interval warning, because they are the same kind of statement:
+    the number ranks geometries, and the width of the band is the honest part.
+    """
+    st.subheader("Strength")
+    cap, lo, hi = r["capacity_kN"], r["capacity_lo_kN"], r["capacity_hi_kN"]
+
+    if cap <= 0 and r["ucs_nom_MPa"] <= 0:
+        st.error(
+            f"**No capacity: the carbonate gate is not met.** At "
+            f"{r['critical_section_mm2']:.0f} mm² of section it would not matter "
+            "what the geometry is — below ~3 % CaCO₃ a specimen has no "
+            "self-integrity to test, so this is a zero rather than a small "
+            "number. Raise **CaCO₃ achieved** in the sidebar, or treat the cast "
+            "as needing confinement.")
+    else:
+        st.info(f"**Estimated capacity {cap:.2f} kN** (5-95 %: {lo:.2f} - "
+                f"{hi:.2f} kN). A ranking between geometries, not a structural "
+                f"sign-off — nothing here has been cast or tested.")
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Capacity", f"{cap:.2f} kN",
+              help="UCS × net section ÷ Kt, over 400 draws. The 5-95 % band is "
+                   "dominated by an ASSUMED organism derating, not by sampling.")
+    c2.metric("Nominal UCS", f"{r['ucs_nom_MPa']:.2f} MPa",
+              help="Median of the sampled envelope AFTER the B. subtilis "
+                   "derating. The undegraded literature value is 2-3x higher.")
+    c3.metric("Critical section", f"{r['critical_section_mm2']:,.0f} mm²",
+              help=r["critical_section_plane"])
+    c4.metric("Notch factor Kt", f"{r['kt_used']:.2f}",
+              help="Inglis, from the geometry's own root radius. The capacity is "
+                   "divided by it: the notch multiplies local stress, so the load "
+                   "that first reaches UCS somewhere is smaller by that factor.")
+
+    st.warning(
+        f"**This is {r['c90_ratio']:.0f}x below the masonry benchmark.** ASTM C90 "
+        f"asks {r['c90_benchmark_MPa']:g} MPa net-area compressive strength of a "
+        f"loadbearing unit; MICP on waste aggregate lands 5-20x under it, and "
+        f"this design is at {r['ucs_nom_MPa']:.2f} MPa. A bio-cemented unit is "
+        "not a structural CMU substitute, and no amount of geometry closes that "
+        "gap — it is a material property.")
+    st.caption(r["strength_provenance"])
+    if r["critical_section_agrees"] is False:
+        st.caption(
+            f":material/warning: The analytic section is "
+            f"{r['critical_section_rel_diff'] * 100:.0f} % from the "
+            f"{r['critical_section_voxel_mm2']:,.0f} mm² the voxel grid counts on "
+            "the same plane. On a vessel that usually means the aperture fillet "
+            "has eaten into the neck — the grammar blends the bore into the "
+            "cavity wall there, which the analytic annulus does not model, so "
+            "the capacity above reads optimistic.")
+
+
 def verdict_table(r: dict):
     rows = []
     for v in r["verdicts"]:
@@ -470,6 +553,9 @@ def tab_design(typology, mix, proc, jam_ratio, n_mc):
         st.markdown("---")
     geometry_panel(r)
 
+    st.markdown("---")
+    strength_panel(r)
+
     if show_field:
         fig = section_figure(r)
         if fig is not None:
@@ -581,8 +667,9 @@ def tab_process(mix, proc, jam_ratio):
 #: What a search's scores are only valid for. `n_mc` belongs in here with the mix and
 #: the cure: the search takes the median of the FIRST n_mc draws of a fixed-seed chain,
 #: so changing the draw count moves every score in the table.
-def _search_settings(mix, proc, jam_ratio, n_mc) -> dict:
-    return {"mix": dict(mix), "proc": dict(proc), "jam": jam_ratio, "n_mc": int(n_mc)}
+def _search_settings(mix, proc, jam_ratio, n_mc, objective="viability") -> dict:
+    return {"mix": dict(mix), "proc": dict(proc), "jam": jam_ratio,
+            "n_mc": int(n_mc), "objective": objective}
 
 
 def tab_explore(typology, mix, proc, jam_ratio, n_mc):
@@ -593,6 +680,17 @@ def tab_explore(typology, mix, proc, jam_ratio, n_mc):
         "scored by the same engine as the Design tab — the search adds no shortcut "
         "model. When it finishes you can push the winner straight into the sliders, "
         "and the **Mould** tab will then build the silicone mould for it.")
+
+    objective = st.radio(
+        "Optimize for", ["viability", "strength"], horizontal=True,
+        format_func=lambda s: {"viability": "Likelihood of cementing",
+                               "strength": "Load capacity"}[s],
+        help="Both rank FEWEST BROKEN RULES FIRST, and only then differ: "
+             "viability breaks the tie on the score's 5th percentile, strength "
+             "on the capacity's. Feasibility has to lead either way — a design "
+             "that cannot be cast has no capacity, and capacity is the weaker "
+             "basis for overriding a hard rule, since it rests on one study and "
+             "an assumed organism derating.")
 
     detected = E.cpu_budget()
     c1, c2, c3, c4, c5 = st.columns([1, 1, 0.8, 1, 1.4])
@@ -645,6 +743,7 @@ def tab_explore(typology, mix, proc, jam_ratio, n_mc):
                 typology, GEOM_SPACE[typology], GEOM_CHOICES[typology], derive_geom,
                 mix, proc, jam_ratio=jam_ratio, n_random=int(n), n_refine=int(n_ref),
                 seed=int(seed), start=cur, n_mc=n_mc, workers=int(workers),
+                objective=objective,
                 progress=lambda f, d, t: prog.progress(f, text=f"scored {d}/{t}"))
         prog.empty()
         # Same reason the Mould tab holds its result: any widget interaction re-runs
@@ -652,7 +751,7 @@ def tab_explore(typology, mix, proc, jam_ratio, n_mc):
         # moment you touch anything cannot be acted on.
         st.session_state["search"] = {
             "typology": typology, "rows": rows,
-            "settings": _search_settings(mix, proc, jam_ratio, n_mc),
+            "settings": _search_settings(mix, proc, jam_ratio, n_mc, objective),
         }
 
     got = st.session_state.get("search")
@@ -663,28 +762,39 @@ def tab_explore(typology, mix, proc, jam_ratio, n_mc):
     if not rows:
         st.warning("No candidate built successfully. Try a different typology or mix.")
         return
-    if got["settings"] != _search_settings(mix, proc, jam_ratio, n_mc):
-        st.warning("The mix or cure settings have changed since this search ran. "
-                   "Scores below are for the settings it ran under.")
+    if got["settings"] != _search_settings(mix, proc, jam_ratio, n_mc, objective):
+        st.warning("The mix, cure settings or objective have changed since this "
+                   "search ran. The table below is for the settings it ran under, "
+                   "and is still ranked by the objective it ran under.")
 
     best = rows[0]
+    ran_for = got["settings"]["objective"]
     nf = sum(1 for r in rows if r["feasible"])
     st.markdown("#### Best design found")
-    m1, m2, m3, m4 = st.columns(4)
+    m1, m2, m3, m4, m5 = st.columns(5)
     m1.metric("Broken rules", int(best["n_fail"]),
-              help="Ranked on this FIRST, then on score. A design that breaks a hard "
-                   "rule cannot be cast at all, so no score should buy its way past "
-                   "one that can — and on score alone the ordering really does invert: "
-                   "an 18 mm-walled vessel breaking two rules outscores a 27 mm one "
-                   "breaking only the aperture rule.")
-    m2.metric("Score", f"{best['score']:.3f}",
+              help=f"Ranked on this FIRST, then on "
+                   f"{'capacity' if ran_for == 'strength' else 'score'}. A design "
+                   "that breaks a hard rule cannot be cast at all, so nothing should "
+                   "buy its way past one that can — and on score alone the ordering "
+                   "really does invert: an 18 mm-walled vessel breaking two rules "
+                   "outscores a 27 mm one breaking only the aperture rule.")
+    m2.metric("Score" + (" ← ranked on" if ran_for == "viability" else ""),
+              f"{best['score']:.3f}",
               help=f"5–95 % interval {best['score_lo']:.3f} – {best['score_hi']:.3f}. "
                    f"Ties on broken rules are settled by the 5th percentile first, "
                    f"because the intervals are wide and mostly driven by an assumed "
                    f"biofilm volume fraction — ranking on the median alone promotes "
                    f"whichever design has the widest interval.")
-    m3.metric("Limited by", SUB_LABEL.get(best["limiting"], best["limiting"]))
-    m4.metric("Cemented fraction", f"{best['cemented_fraction']:.3f}")
+    m3.metric("Capacity" + (" ← ranked on" if ran_for == "strength" else ""),
+              f"{best['capacity_kN']:.2f} kN",
+              help=f"5th percentile {best['capacity_lo_kN']:.2f} kN, which is what "
+                   f"the strength objective ranks on — the median rewards whichever "
+                   f"design happens to have the widest interval, and here the "
+                   f"interval is mostly an ASSUMED 0.3-0.7 organism derating. Not "
+                   f"a structural sign-off.")
+    m4.metric("Limited by", SUB_LABEL.get(best["limiting"], best["limiting"]))
+    m5.metric("Cemented fraction", f"{best['cemented_fraction']:.3f}")
     st.write(f"**{nf} of {len(rows)} feasible.** "
              + ("" if best["feasible"] else
                 f"**The best design still fails:** {best['failed']}. "))
@@ -720,8 +830,9 @@ def tab_explore(typology, mix, proc, jam_ratio, n_mc):
 
     st.markdown("#### Every candidate scored")
     df = pd.DataFrame(rows)
-    show = keys + ["n_fail", "score", "score_lo", "score_hi", "feasible", "limiting",
-                   "section_mm", "volume_cm3", "failed"]
+    show = keys + ["n_fail", "score", "score_lo", "score_hi", "capacity_kN",
+                   "capacity_lo_kN", "feasible", "limiting", "section_mm",
+                   "volume_cm3", "failed"]
     st.dataframe(df[show].round(3), hide_index=True, width="stretch", height=340)
     st.download_button("Download results (CSV)", df.to_csv(index=False),
                        file_name=f"search_{typology}.csv", mime="text/csv",

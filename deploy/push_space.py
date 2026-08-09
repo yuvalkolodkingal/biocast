@@ -44,7 +44,7 @@ IGNORE = [
     ".git/*", ".gitignore", ".gitattributes", ".github/*", ".claude/*",
     ".venv/*", "*/.venv/*",
     "__pycache__/*", "*/__pycache__/*", "*.pyc",
-    "stl/*", "docs/*", "examples/*", "deploy/*", "out/*",
+    "stl/*", "docs/*", "examples/*", "deploy/*", "out/*", "tests/*",
     "*.egg-info/*", ".ipynb_checkpoints/*",
     "README.md",                      # replaced by deploy/space_README.md
     # Sweep outputs, read only by examples/ and the docs — both already excluded.

@@ -31,13 +31,31 @@ class Mix:
     d_max is the single most influential parameter in the whole rule set: it
     sets the fillet radius floor, the groove-width floor (via jamming) and the
     minimum castable section thickness.
+
+    Two fields exist only for the load-capacity estimate and neither is a
+    measurement of this project's material:
+
+    `caco3_achieved_pct` is ASSUMED. It is what the treatment schedule is
+    believed to have deposited, and `physics.strength` reads it for ONE purpose:
+    the hard gate at ~3 % below which a specimen is not self-supporting at all
+    (Fu et al. 2023). It is deliberately not used as a strength predictor —
+    pooled UCS-vs-CaCO3 fits over the retrieved data give R^2 <= 0.01, and the
+    same carbonate content has produced strengths 12x apart. `caco3_target` is
+    the schedule's target, kept as a record of intent; no model reads it.
+
+    `substrate_class` SELECTS which measured UCS envelope applies — "rca" for
+    crushed construction and demolition waste (the project's actual substrate,
+    and the weakest: one study, 0.34-0.72 MPa) or "clean_sand" for the pooled
+    clean-sand band. It changes which measurement is quoted, not how it is used.
     """
 
     d_max: float = 4.0            # mm, largest aggregate fragment (team notes: waste reaches 4 mm)
     d50: float = 1.0              # mm, median particle size
     porosity: float = 0.38        # -, packed bed void fraction
     saturation: float = 0.65      # -, fraction of pore volume filled with liquid during curing
-    caco3_target: float = 8.0     # % by mass, CaCO3 achieved after the full treatment schedule
+    caco3_target: float = 8.0     # % by mass, the treatment schedule's target (recorded, unread)
+    caco3_achieved_pct: float = 8.0   # % by mass, ASSUMED — see below
+    substrate_class: str = "rca"  # "rca" (crushed C&D waste) | "clean_sand"
 
     def __post_init__(self):
         if self.d_max <= 0:
@@ -46,6 +64,9 @@ class Mix:
             raise ValueError("porosity must be in (0,1)")
         if not 0 <= self.saturation <= 1:
             raise ValueError("saturation must be in [0,1]")
+        if self.substrate_class not in ("rca", "clean_sand"):
+            raise ValueError(f"substrate_class must be 'rca' or 'clean_sand', "
+                             f"got {self.substrate_class!r}")
 
 
 # --------------------------------------------------------------------------
@@ -148,12 +169,22 @@ class Design:
         return self.geom.typology
 
     def to_dict(self) -> dict:
+        """Plain data for export. `asdict` carries the new Mix fields for free;
+        the provenance block is here because they must not be read as
+        measurements once this dict has left the process."""
         return {
             "name": self.name,
             "typology": self.typology,
             "geom": asdict(self.geom),
             "mix": asdict(self.mix),
             "proc": asdict(self.proc),
+            "provenance": {
+                "mix.caco3_achieved_pct":
+                    "ASSUMED — no measurement of this project's material",
+                "mix.substrate_class":
+                    "SELECTS which measured UCS envelope applies; 'rca' rests on "
+                    "a single study (Fouladi et al. 2024)",
+            },
         }
 
     def variant(self, **kw) -> "Design":

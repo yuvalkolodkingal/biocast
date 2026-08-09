@@ -1,0 +1,12 @@
+case                                                               S/V  t_max   cem  score       [5-95%]         mode  feas
+---------------------------------------------------------------------------------------------------------------------------
+A: solid ovoid, monolithic mould (paper Fig. 5 — FAILED)        0.0752   96.0  0.45  0.000 [0.000,0.000]     aeration False
+B: solid ovoid, split mould (isolates parting-plane effect)     0.1265   76.0  0.57  0.000 [0.000,0.015]     aeration False
+C: hollow shell, monolithic mould (isolates hollowing)          0.2186   16.0  1.00  0.088 [0.000,0.111]  castability  True
+D: hollow shell, split mould (paper Figs. 6-7 — SUCCEEDED)      0.2629   16.0  1.00  0.088 [0.000,0.111]  castability  True
+E: hollow shell, sharp rim r=0.5 mm (notch-sensitivity probe)   0.2597   16.0  1.00  0.001 [0.000,0.001]   structural False
+
+RETRODICTION:
+  paper FAILED case A score = 0.000  (mode: aeration)
+  paper SUCCESS case D score = 0.088  (mode: castability)
+  ranking correct: True;  failure attributed to aeration/drying: True

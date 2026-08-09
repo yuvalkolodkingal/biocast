@@ -35,6 +35,7 @@ from ..physics import fields as fl
 from ..physics import section as sec
 from ..physics import drying as dry
 from ..physics import oxygen as ox
+from ..physics import strength as stg
 from .. import constraints as cons
 from .. import score as sc
 
@@ -220,6 +221,31 @@ def load_physics(kin_path: str = "", mec_path: str = "") -> sc.PhysicsInputs:
     return sc.PhysicsInputs.from_lit(kin, mec)
 
 
+@lru_cache(maxsize=1)
+def load_mechanics(mec_path: str = "") -> LitParams | None:
+    """The mechanics literature set itself, for the capacity model.
+
+    `load_physics` reduces the same file to (low, mode, high) triangles, which is
+    the wrong shape for UCS: on construction waste there is ONE study, so a
+    triangular prior would invent a mode the measurement does not have.
+    `physics.strength` reads the rows directly instead — hence a second accessor
+    over the same file rather than more fields on `PhysicsInputs`.
+
+    Returns None rather than raising when the file is absent: capacity is a
+    reported extra, and the module's own defaults are the same numbers. That is
+    the opposite of `load_physics`, which raises, because there the package
+    defaults silently coincide with several retrieved values and a wrong path
+    would be invisible.
+    """
+    mp = _find_param_file(mec_path, "mechanics_params.json")
+    if mp is None:
+        return None
+    try:
+        return LitParams(str(mp))
+    except Exception:
+        return None
+
+
 def make_geom(typology: str, **kw):
     """Build the right params dataclass, ignoring keys it does not define."""
     cls = {"shell": ShellParams, "block": BlockParams, "tile": TileParams}[typology]
@@ -236,16 +262,11 @@ def build_mesh(geom, pitch: float | None = None):
     return mod.build(geom, pitch=p, return_field=True)
 
 
-def notch_of(geom) -> tuple[float, float]:
-    """(notch depth, root radius) for the Inglis stress-concentration factor."""
-    if isinstance(geom, ShellParams):
-        return 0.0, max(geom.fillet_r, 1e-6)
-    depth = float(getattr(geom, "groove_depth", 0.0) or 0.0)
-    if depth <= 0:
-        return 0.0, max(geom.fillet_r, 1e-6)
-    width = float(getattr(geom, "groove_width", 0.0) or 0.0)
-    root = min(geom.fillet_r, width / 2 if width > 0 else geom.fillet_r, depth)
-    return depth, max(root, 1e-6)
+#: (notch depth, root radius) for the Inglis stress-concentration factor. Defined
+#: in `physics.strength` and re-exported here under the name callers already use:
+#: the scorer and the capacity model must not be able to disagree about what the
+#: notch is, and they would if each kept its own copy.
+notch_of = stg.notch_of
 
 
 def evaluate(typology: str, geom_kw: dict, mix_kw: dict, proc_kw: dict, *,
@@ -282,6 +303,13 @@ def evaluate(typology: str, geom_kw: dict, mix_kw: dict, proc_kw: dict, *,
     res = sc.score_design(design, diag, phys=phys, n_mc=n_mc,
                           min_feature_mm=min_feature,
                           notch_depth_mm=notch_d, root_radius_mm=root_r)
+
+    # Capacity rides alongside the score on the SAME geometry, notch and seed
+    # style, and deliberately does not enter it: the four subscores answer
+    # "will this solidify", capacity answers "what can it carry once it has".
+    # It never marks a design infeasible — see `physics.strength`.
+    cap = stg.load_capacity(design, diag, phys=load_mechanics(), n_mc=n_mc,
+                            notch_depth_mm=notch_d, root_radius_mm=root_r)
 
     th = cons.Thresholds(jam_ratio=jam_ratio)
     # `_aeration_rules` reads `cemented_fraction` and `penetration_depth_2x` from the
@@ -332,6 +360,19 @@ def evaluate(typology: str, geom_kw: dict, mix_kw: dict, proc_kw: dict, *,
         "warned_rules": summary["warned_rules"],
         "verdicts": [v.__dict__ for v in verdicts],
         "jam_ratio_used": jam_ratio,
+        "capacity_kN": cap["capacity_kN"],
+        "capacity_lo_kN": cap["capacity_lo_kN"],
+        "capacity_hi_kN": cap["capacity_hi_kN"],
+        "ucs_nom_MPa": cap["ucs_nom_MPa"],
+        "critical_section_mm2": cap["critical_section_mm2"],
+        "critical_section_voxel_mm2": cap["critical_section_voxel_mm2"],
+        "critical_section_rel_diff": cap["critical_section_rel_diff"],
+        "critical_section_agrees": cap["critical_section_agrees"],
+        "critical_section_plane": cap["critical_section_plane"],
+        "kt_used": cap["kt_used"],
+        "c90_benchmark_MPa": cap["c90_benchmark_MPa"],
+        "c90_ratio": cap["c90_ratio"],
+        "strength_provenance": cap["strength_provenance"],
         "_mesh": mesh,
         "_diag": diag,
     })
@@ -628,6 +669,33 @@ def rank_design(r: dict) -> tuple:
             float(r.get("score", 0.0)))
 
 
+def rank_strength(r: dict) -> tuple:
+    """Sort key for the strongest VIABLE shape, best last.
+
+    Feasibility leads here for exactly the reason it leads in `rank_design`, and
+    the measured case in `search_shapes` is the same one: an 18 mm-walled vessel
+    that breaks two rules cannot be cast, so whatever capacity it computes is the
+    capacity of an object that does not exist. Capacity is a weaker basis for
+    overriding feasibility than the score is, not a stronger one — it is a
+    literature UCS envelope on a single study times an ASSUMED organism derating,
+    so it must not be able to buy a design past a broken hard rule.
+
+    The 5th percentile leads the capacity comparison for the same reason
+    `rank_design` ranks on `score_lo`: the interval spans the ASSUMED 0.3-0.7
+    derating on top of a log-uniform envelope, so the median rewards whichever
+    design happens to have the widest one. `score_lo` breaks the remaining ties,
+    which keeps two designs of equal capacity ordered by which is likelier to
+    cement at all.
+    """
+    return (-int(r.get("n_fail", 0)), float(r.get("capacity_lo_kN", 0.0)),
+            float(r.get("score_lo", 0.0)))
+
+
+#: The two things a search can be asked to optimise. "viability" is the default
+#: and reproduces the previous behaviour exactly.
+OBJECTIVES = {"viability": rank_design, "strength": rank_strength}
+
+
 def _row_from(r: dict) -> dict:
     """The scalar summary of one scored design — the only part a search row needs.
 
@@ -643,6 +711,7 @@ def _row_from(r: dict) -> dict:
             "section_mm": r["min_section_measured_mm"],
             "volume_cm3": r["volume_mm3"] / 1000.0,
             "cemented_fraction": r["cemented_fraction"],
+            "capacity_kN": r["capacity_kN"], "capacity_lo_kN": r["capacity_lo_kN"],
             "failed": ", ".join(r["failed_rules"])}
 
 
@@ -755,7 +824,8 @@ def search_shapes(typology: str, space: dict, choices: dict, derive,
                   mix_kw: dict, proc_kw: dict, *, jam_ratio: float = JAM_RATIO_LIT,
                   n_random: int = 24, n_refine: int = 2, seed: int = 0,
                   n_mc: int = 150, start: dict | None = None,
-                  workers: int | None = None, progress=None) -> list:
+                  workers: int | None = None, objective: str = "viability",
+                  progress=None) -> list:
     """Find the design most likely to cement, by sampling then refining.
 
     Random search alone is a poor optimiser in eight dimensions, and it was what the
@@ -800,6 +870,18 @@ def search_shapes(typology: str, space: dict, choices: dict, derive,
     collapses to 0.000 for plenty of sound designs, and the median then does the
     discriminating — which is the honest outcome, not a workaround.
 
+    `objective` chooses what "best" means. "viability" is the default and the
+    behaviour above, ranking on `score_lo`. "strength" swaps the tiebreak for
+    `capacity_lo_kN` via `rank_strength` — but keeps `-n_fail` in front, so the
+    strongest VIABLE shape is what comes back rather than the strongest shape.
+    The paragraph above is the reason: the 18 mm-walled vessel that outranked the
+    27 mm one on score alone cannot be cast at either, and a capacity computed
+    for it is the capacity of an object that does not exist. Capacity is the
+    weaker basis for that override, not the stronger one — its interval carries
+    an ASSUMED organism derating on top of a single-study envelope. Everything
+    else about the search is identical, including the RNG stream, so the two
+    objectives explore the same candidates and differ only in which they keep.
+
     EVERY CANDIDATE IS SAMPLED ON THE SLIDER'S OWN GRID. The search used to draw
     continuous values while the "use this design" button rounded them to each
     slider's `step` on the way back — so the design handed over was not the design
@@ -827,6 +909,11 @@ def search_shapes(typology: str, space: dict, choices: dict, derive,
 
     Returns every candidate scored, best first.
     """
+    try:
+        rank = OBJECTIVES[objective]
+    except KeyError:
+        raise ValueError(f"objective must be one of {sorted(OBJECTIVES)}, "
+                         f"got {objective!r}") from None
     rng = np.random.default_rng(int(seed))
     names = list(space)
     rows, seen = [], set()
@@ -949,7 +1036,7 @@ def search_shapes(typology: str, space: dict, choices: dict, derive,
 
     if not rows:
         return []
-    best = max(rows, key=rank_design)
+    best = max(rows, key=rank)
     cur = {k: best[k] for k in all_names}
 
     # The first step is 10 % of each range, not 25 %. A quarter of the range is a leap,
@@ -965,7 +1052,7 @@ def search_shapes(typology: str, space: dict, choices: dict, derive,
                     continue
                 r = _score({**cur, k: opt})     # `_score_batch` does the ticking
                 used += 1
-                if r and rank_design(r) > rank_design(best):
+                if r and rank(r) > rank(best):
                     best, cur = r, {kk: r[kk] for kk in all_names}
                     improved = True
         for k in names:
@@ -980,14 +1067,14 @@ def search_shapes(typology: str, space: dict, choices: dict, derive,
                 trial[k] = _snap(k, cur[k] + sign * step)
                 r = _score(trial)
                 used += 1
-                if r and rank_design(r) > rank_design(best):
+                if r and rank(r) > rank(best):
                     best, cur = r, {kk: r[kk] for kk in all_names}
                     improved = True
                     break                     # move on; this direction paid off
         if not improved:
             frac /= 2.0                       # only shrink when a full sweep fails
 
-    rows.sort(key=rank_design, reverse=True)
+    rows.sort(key=rank, reverse=True)
     return rows
 
 
